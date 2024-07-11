@@ -39,7 +39,7 @@
 ## Quick Start
 
 For quick results using DSEG-LIME, you're encouraged to experiment with the provided notebook. This allows for a faster experience in obtaining outcomes:
-- [DSEG-LIME Quick Start](DSEG-Pipeline.ipynb)
+- [DSEG-LIME Quick Start](DSEG_Demo.ipynb)
 
 Be mindful of potential package-related issues, as it's crucial to have all necessary packages installed with their correct versions. For detailed information on the required packages and their specific versions, please refer to the [Prerequisites](#prerequisites) section. 
 
@@ -64,7 +64,7 @@ Additional Python packages are required to execute the code. For this purpose, [
 
 We advice to install the packages in a new environemnt to mitigate the risk of facing issues with version conflicts of preinstalled packages. The environment we used in our study was based on Python 3.10.8 in a linux environment.
 
-Once the necessary requirements are installed, you can execute the [DSEG-Pipeline](DSEG-Pipeline.ipynb) to explore the provided examples or to process your own images. Note that possessing the [SAM checkpoint](#models) and downloading the [model](#models) for explanation are prerequisites for operation.
+Once the necessary requirements are installed, you can execute the [DSEG-Demo](DSEG_Demo.ipynb) to explore the provided examples or to process your own images. Note that possessing the [SAM checkpoint](#models) and downloading the [model](#models) for explanation are prerequisites for operation.
 
 <p align="right">(<a href="#readme-top">🔝 back to top</a>)</p>
 
