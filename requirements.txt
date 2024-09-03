@@ -29,7 +29,7 @@ tensorflow==2.15.0
 timm==0.9.7
 torch==2.2.0
 torchvision==0.15.2
-tqdm==4.65.0
+tqdm==4.66.3
 transformers==4.38.0
 wget==3.2
 xmltodict==0.13.0
