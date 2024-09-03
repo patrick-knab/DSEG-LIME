@@ -30,6 +30,6 @@ timm==0.9.7
 torch==2.0.1
 torchvision==0.15.2
 tqdm==4.65.0
-transformers==4.35.0
+transformers==4.38.0
 wget==3.2
 xmltodict==0.13.0
