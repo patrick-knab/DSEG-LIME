@@ -10,7 +10,7 @@ networkx==3.1
 nltk==3.8.1
 numexpr==2.9.0
 numpy==1.23.5
-opencv_python==4.7.0.72
+opencv_python==4.8.1.78
 pandas==1.5.2
 Pillow==10.2.0
 prettytable==3.10.0
