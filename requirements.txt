@@ -7,7 +7,7 @@ kmedoids==0.5.0
 lime==0.2.0.1
 matplotlib==3.7.1
 networkx==3.1
-nltk==3.8.1
+nltk==3.9
 numexpr==2.9.0
 numpy==1.23.5
 opencv_python==4.8.1.78
