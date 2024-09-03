@@ -27,7 +27,7 @@ spacy==3.7.4
 submitit==1.5.1
 tensorflow==2.15.0
 timm==0.9.7
-torch==2.0.1
+torch==2.2.0
 torchvision==0.15.2
 tqdm==4.65.0
 transformers==4.38.0
