@@ -8,7 +8,7 @@
   <h1 align="center">DSEG-LIME - Improving Image Explanation by Hierarchical Data-Driven Segmentation</h1>
 
   <p align="center">
-    Preprint [Tbd.]
+    Preprint
     
 </div>
 

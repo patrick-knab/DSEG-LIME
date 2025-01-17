@@ -10,6 +10,7 @@ import math
 from scipy.sparse.csgraph import minimum_spanning_tree
 import networkx as nx
 import seaborn as sns
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from scipy import ndimage
 
 
@@ -97,13 +98,13 @@ def create_subsegment(segment, annotation_id, data, config, replace=True, n_segm
         return segmented_image, indices_to_replace_return
 
 def segment_image_dynamic(segmented_image, 
-                        annotation_ids, 
-                        image,
-                        config,
-                        raw_Segments, 
-                        hierarchy_dict,
-                        links_ids,
-                        static = False):
+                          annotation_ids, 
+                          image,
+                          config,
+                          raw_Segments, 
+                          hierarchy_dict,
+                          links_ids,
+                          static=False):
     """
     Segment the image dynamically based on the given parameters.
 
@@ -119,54 +120,75 @@ def segment_image_dynamic(segmented_image,
 
     Returns:
         numpy.ndarray: The fine-grained segments of the image.
+        dict: The reverse mapping of new link IDs to their original values.
     """
     
-    resized_panoptic_seg= segmented_image.copy()
-    investigate_number  = [arr[0] for arr in annotation_ids]
-    fine_grained_segments = np.zeros(segmented_image.shape)
-    image_id_weights = []
-    if config['lime_segmentation']['SAM']:
-        for i in investigate_number:
+    resized_panoptic_seg = segmented_image.copy()
+    investigate_ids = [arr[0] for arr in annotation_ids]  # IDs to investigate
+    investigate_ids = np.unique(investigate_ids)
+    fine_grained_segments = np.zeros(segmented_image.shape)  # Output segments
+    image_id_weights = []  # Store weights for sub-segments
+
+    if config['lime_segmentation'].get('SAM'):
+        reverse_dict = {v: k for k, v in links_ids.items()}  # Reverse the links for easier lookups
+
+        def search_nested_dict(d, target_key):
+            """
+            Recursively searches for a key at any depth in the dictionary.
+            
+            Args:
+                d (dict): Dictionary to search.
+                target_key (str): The key to search for.
+            
+            Returns:
+                dict or None: Returns the value associated with the key if found, else None.
+            """
+            if target_key in d:
+                return d[target_key]
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    result = search_nested_dict(value, target_key)
+                    if result is not None:
+                        return result
+            return None  # Key not found
+
+        for i in investigate_ids:
             old_key = str(links_ids[i])
-            if old_key in hierarchy_dict.keys():
-                for j in hierarchy_dict[old_key]:
-                    mask = (raw_Segments[int(j)].astype(np.uint8)*len(np.unique(resized_panoptic_seg))) != 0
-                    resized_panoptic_seg[mask] = (raw_Segments[int(j)].astype(np.uint8)*len(np.unique(resized_panoptic_seg)))[mask]
+            sub_hierarchy = search_nested_dict(hierarchy_dict, old_key)  # Search for old_key in nested hierarchy
+            
+            if sub_hierarchy is not None:
+                for sub_id in sub_hierarchy:
+                    sub_id = int(sub_id)
+                    mask = (raw_Segments[sub_id].astype(np.uint8) * len(np.unique(resized_panoptic_seg))) != 0
+                    resized_panoptic_seg[mask] = (raw_Segments[sub_id].astype(np.uint8) * len(np.unique(resized_panoptic_seg)))[mask]
+                    
+                    if sub_id not in reverse_dict:
+                        new_key = len(reverse_dict)
+                        reverse_dict[sub_id] = new_key
+
         fine_grained_segments = resized_panoptic_seg
-        
+        link_ids = {v: k for k, v in reverse_dict.items()}  # Reversing the dictionary to map new keys to original IDs
+
     else:
         if static:
-            for i in investigate_number:
-                resized_panoptic_seg_, _ = create_subsegment(resized_panoptic_seg, i, image, 
-                                                                config, False, 8)
-                resized_panoptic_seg_ = resized_panoptic_seg_+len(np.unique(fine_grained_segments))    
-                resized_panoptic_seg[_] = resized_panoptic_seg_[_]
+            for i in investigate_ids:
+                resized_seg, _ = create_subsegment(resized_panoptic_seg, i, image, config, False, 8)
+                resized_seg += len(np.unique(fine_grained_segments))  # Offset unique IDs
+                resized_panoptic_seg[_] = resized_seg[_]
             fine_grained_segments = resized_panoptic_seg
         else:
             for i in range(len(np.unique(resized_panoptic_seg))):
-                if i not in investigate_number:
-                    resized_panoptic_seg_, _ = create_subsegment(resized_panoptic_seg, 
-                                                                i, 
-                                                                image, 
-                                                                config,  
-                                                                False, 
-                                                                config['lime_segmentation']['min_segments'])
-                    
-                    
+                if i not in investigate_ids:
+                    resized_seg, _ = create_subsegment(resized_panoptic_seg, i, image, config, False, config['lime_segmentation']['min_segments'])
                 else:
-                    resized_panoptic_seg_, _ = create_subsegment(resized_panoptic_seg, 
-                                                                i, 
-                                                                image,  
-                                                                config, 
-                                                                False, 
-                                                                config['lime_segmentation']['max_segments'])
-                for j in np.unique(resized_panoptic_seg_):
-                    image_id_weights.append([j+len(np.unique(fine_grained_segments)), i])
-                resized_panoptic_seg_ = resized_panoptic_seg_+len(np.unique(fine_grained_segments))    
+                    resized_seg, _ = create_subsegment(resized_panoptic_seg, i, image, config, False, config['lime_segmentation']['max_segments'])
+                
+                for sub_id in np.unique(resized_seg):
+                    image_id_weights.append([sub_id + len(np.unique(fine_grained_segments)), i])
+                resized_seg += len(np.unique(fine_grained_segments))
+                fine_grained_segments[_] = resized_seg[_]
 
-                fine_grained_segments[_] = resized_panoptic_seg_[_]
-
-    return fine_grained_segments
+    return fine_grained_segments, link_ids
 
 def segment_seed(image, 
                 image_path, 
@@ -190,17 +212,16 @@ def segment_seed(image,
     """
     
     if config['lime_segmentation']['DETR']:
-        # DETR segmentation method
-        image = load_img(image_path)#, target_size=(512, 512))
+        image = load_img(image_path, target_size=dim)
         inputs = feature_extractor(images=image, return_tensors="pt")
         outputs = model(**inputs)
-        processed_sizes = torch.as_tensor(inputs["pixel_values"].shape[-2:]).unsqueeze(0)
-        result = feature_extractor.post_process_panoptic(outputs, processed_sizes)[0]
-        panoptic_seg = Image.open(io.BytesIO(result["png_string"]))
-        panoptic_seg = np.array(panoptic_seg, dtype=np.uint8)
+        result = feature_extractor.post_process_panoptic_segmentation(outputs, target_sizes=[dim])
 
-        panoptic_seg = panoptic_seg[:, :, 0]
-        resized_panoptic_seg= cv2.resize(panoptic_seg, dim, interpolation=cv2.INTER_LINEAR)
+        # A tensor of shape (height, width) where each value denotes a segment id, filled with -1 if no segment is found
+        resized_panoptic_seg = result[0]["segmentation"]
+        resized_panoptic_seg_ = {}
+        hierarchical_dict = {}
+        link_ids = {}
 
     elif config['lime_segmentation']['SAM']:
         # SAM segmentation method
@@ -216,6 +237,7 @@ def segment_seed(image,
 
         resized_panoptic_seg = {}
         id_list = mask_sizes[1]
+        id_list = [int(i)+1 for i in id_list]
 
         for num, mask in enumerate(small_mask):
             int_array = np.zeros((mask['segmentation'].shape[0], mask['segmentation'].shape[1]))
@@ -229,7 +251,7 @@ def segment_seed(image,
 
             resized_panoptic_seg[id_list[num]] = resized_mask
     
-        resized_panoptic_seg = create_mask_sam(resized_panoptic_seg, hierarchical_dict, iteration = 0, seeds = [7,8])
+        resized_panoptic_seg = create_mask_sam(resized_panoptic_seg, hierarchical_dict)
         resized_panoptic_seg = fill_with_nearest(resized_panoptic_seg)
         resized_panoptic_seg_nums = np.unique(resized_panoptic_seg)
 
@@ -291,6 +313,8 @@ def segment_seed_dynamic(image,
 
         resized_panoptic_seg_ = {}
         id_list = mask_sizes[1]
+        #increase id_list by 1 to avoid 0 index
+        id_list = [int(i)+1 for i in id_list]
 
         for num, mask in enumerate(small_mask):
             int_array = np.zeros((mask['segmentation'].shape[0], mask['segmentation'].shape[1]))
@@ -305,7 +329,7 @@ def segment_seed_dynamic(image,
 
             resized_panoptic_seg_[id_list[num]] = resized_mask
         
-        resized_panoptic_seg_mask = create_mask_sam(resized_panoptic_seg_, hierarchical_dict, iteration = 0, seeds = [])
+        resized_panoptic_seg_mask = create_mask_sam(resized_panoptic_seg_, hierarchical_dict)
         resized_panoptic_seg = fill_with_nearest(resized_panoptic_seg_mask)
         #add a position in the hierarchy for newly created segments by empty areas
         for new_key in np.unique(resized_panoptic_seg):
@@ -404,31 +428,56 @@ def draw_relation(heatmap, threshold = 0.5):
     labels = heatmap[1]
     graph = np.where(np.abs(matrix) > threshold, np.abs(matrix), 0)
 
-    #Construct Minimum Spanning Tree
-    mst = minimum_spanning_tree(graph).toarray()
-
-    # Convert MST to a NetworkX graph for visualization
-
-    labeldict = {}
-    for i in range(len(labels)):
-        labeldict[i] = str(labels[i])
-
+    # Construct directed graph
     G = nx.DiGraph()
-    for i in range(len(matrix)):
-        G.add_node(labeldict[i])
+    for i in range(len(labels)):
+        G.add_node(labels[i])
+
     edges = []
+    for i in range(graph.shape[0]):
+        for j in range(graph.shape[1]):
+            if graph[i, j] != 0:
+                edges.append((labels[i], labels[j], graph[i, j]))
+
+    G.add_weighted_edges_from(edges)
+    # Drop self-loops (edges from a node to itself)
+    G.remove_edges_from(nx.selfloop_edges(G))
+
+    # Identify top parent node (node with no incoming edges)
+    top_parent_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
+    if not top_parent_nodes:
+        return None
+
+    root_node = top_parent_nodes[0]  # Choose the first one if multiple
+
+    # Calculate shortest paths from the root node
+    shortest_paths = nx.single_source_shortest_path_length(G, root_node)
+
+    # Keep only the highest weight incoming edge or handle ties
+    for node in G.nodes():
+        if node == root_node:
+            continue
+        incoming_edges = list(G.in_edges(node, data=True))
+        if len(incoming_edges) > 1:
+            weights = [edge[2]['weight'] for edge in incoming_edges]
+            if all(weight == weights[0] for weight in weights):  # All weights equal
+                longest_distance_edge = max(incoming_edges, key=lambda x: shortest_paths.get(x[0], float('-inf')))
+                for edge in incoming_edges:
+                    if edge != longest_distance_edge:
+                        G.remove_edge(edge[0], edge[1])
+            else:
+                max_edge = max(incoming_edges, key=lambda x: x[2]['weight'])
+                for edge in incoming_edges:
+                    if edge != max_edge:
+                        G.remove_edge(edge[0], edge[1])
     
-    # Add edges to the graph
-    for i in range(mst.shape[0]):
-        for j in range(mst.shape[1]):
-            if mst[i, j] != 0:
-                G.add_edge(labeldict[i], labeldict[j])
-                edges.append(labeldict[i])
-                edges.append(labeldict[j])
+    #increase each node by 1 to avoid 0 index
+    G = nx.relabel_nodes(G, lambda x: str(int(x)+1))
     
     return G
 
-def create_mask_sam(sam_mask_raw, hierarchical_dict, iteration = 0, seeds = None):
+
+def create_mask_sam(sam_mask_raw, hierarchical_dict):
     
     def alter_values(array, num):
         for i in range(array.shape[0]):
@@ -454,52 +503,10 @@ def create_mask_sam(sam_mask_raw, hierarchical_dict, iteration = 0, seeds = None
         return org_mask
     zero_key = list(sam_mask_raw.keys())[0]
     raw_mask = np.zeros((sam_mask_raw[zero_key].shape[0], sam_mask_raw[zero_key].shape[1]))
-
-    if iteration >= 0:
-        for key in hierarchical_dict.keys():
-            raw_mask = add_mask(raw_mask, alter_values(sam_mask_raw[int(key)], int(key)))
     
-    if iteration >= 1:
-        to_drop_keys = seeds
-
-        for key in hierarchical_dict.keys():
-            for seed in seeds:
-                if seed in hierarchical_dict[key].keys():
-                    to_drop_keys.append(key)
-        
-        for key in hierarchical_dict.keys():
-            if int(key) not in to_drop_keys:
-                raw_mask = add_mask(raw_mask, alter_values(sam_mask_raw[int(key)], int(key)), seeds, iter = 1)
-            else:
-                for subkey in hierarchical_dict[key].keys():
-                    raw_mask = add_mask(raw_mask, alter_values(sam_mask_raw[int(subkey)], int(subkey)), seeds, iter = 1)
-            
-        for i in seeds:                   
-            raw_mask = add_mask(raw_mask, alter_values(sam_mask_raw[int(i)], int(i)))
-                    
-    if iteration >= 2:
-        to_drop_keys = []
-
-        for key in hierarchical_dict.keys():
-            for subkey in hierarchical_dict[key].keys():
-                for seed in seeds:
-                    if seed in hierarchical_dict[key].keys() or seed in hierarchical_dict[key][subkey].keys():
-                        to_drop_keys.append(key)
-        
-        for key in hierarchical_dict.keys():
-            if key not in to_drop_keys:
-                raw_mask += sam_mask_raw[int(key)]
-            else:
-                for subkey in hierarchical_dict[key].keys():
-                    raw_mask += sam_mask_raw[int(subkey)]
-            for subkey in hierarchical_dict[key].keys():
-                if subkey not in to_drop_keys:
-                    raw_mask += sam_mask_raw[int(subkey)]
-                else:
-                    for subsubkey in hierarchical_dict[key][subkey].keys():
-                        raw_mask += sam_mask_raw[int(subsubkey)]
-
-
+    for key in hierarchical_dict.keys():
+        raw_mask = add_mask(raw_mask, alter_values(sam_mask_raw[int(key)], int(key)))
+    
     return raw_mask
 
 def fill_with_nearest(image, distance_threshold=10, size_threshold=500):

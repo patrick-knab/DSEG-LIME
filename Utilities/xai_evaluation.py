@@ -11,16 +11,173 @@ import keras
 import pathlib
 import pickle
 from tensorflow.keras.utils import load_img, img_to_array
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from efficientnet.tfkeras import EfficientNetB4, EfficientNetB3
 import torch.nn as nn
 
 from Utilities.utilities import *
 from Utilities.lime_segmentation import *
+import multiprocessing
 from joblib import Parallel, delayed
+
+from utils.shap_utils import *
+from sam_explainer import *
 
 from .GLIME.lime_image import LimeImageExplainerGLIME
 from .GLIME.utils import *
 from skimage.segmentation import mark_boundaries
 
+def adapted_gini(values):
+    # Convert to a numpy array
+    values = np.array(values)
+    
+    # Shift all values to be non-negative
+    min_value = np.min(values)
+    shifted_values = values - min_value  # Shift to non-negative
+    
+    # Calculate the mean of the shifted values
+    mean_shifted = np.mean(shifted_values)
+    print(shifted_values)
+    n = len(shifted_values)
+    
+    # Compute the Gini coefficient
+    gini = (1 / (2 * n**2 * mean_shifted)) * np.sum(
+        np.abs(shifted_values[:, None] - shifted_values)
+    )
+    return gini
+
+def predict_image_(image_path, model, config, plot=False, dim=(380, 380), model_processor=None, contrastivity = False):
+        """
+        Predicts the class labels of an image using a given model.
+
+        Args:
+            image_path (str): The path to the image file.
+            model: The model used for prediction.
+            config (dict): Configuration parameters.
+            plot (bool, optional): Whether to plot the decoded predictions. Defaults to False.
+            dim (tuple, optional): The dimensions to resize the image. Defaults to (380, 380).
+            model_processor: The model processor used for image preprocessing.
+
+        Returns:
+            list: The decoded predictions of the image.
+        """
+        
+        img_array, img_raw = load_and_preprocess_image(image_path, config,plot, dim, model_processor, contrastivity)
+        
+        if config['model_to_explain']['EfficientNet'] or contrastivity: 
+            img_array = np.expand_dims(img_array, 0)
+            predictions = model(img_array)
+            
+        elif config['model_to_explain']['ResNet']:
+            input_batch = img_array.unsqueeze(0) 
+            
+            if torch.cuda.is_available():
+                input_batch = input_batch.to('cuda')
+                model.to('cuda')
+
+            with torch.no_grad():
+                output = model(input_batch)
+            predictions = torch.nn.functional.softmax(output[0], dim=0)
+            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
+            
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
+            outputs = model(**img_array)
+            output = outputs.logits
+            predictions = torch.nn.functional.softmax(output[0], dim=0)
+            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
+
+        decoded_predictions = decode_predictions(predictions)
+        
+        if plot:
+            print(decoded_predictions)
+            
+        return decoded_predictions, predictions
+class eac():
+    def __init__(self):
+        self.model = None
+        self.image_path = None
+        self.concept_masks = None
+        self.org_masks = None
+        self.pred_image_class = None   
+        self.auc_mask = None
+        self.shap_list = None     
+        self.data = None
+            
+    def explain_instance(self, image_path, model, sam_model, model_explain_processor, config, feature_extractor, dim = (380,380)):
+        
+        data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+        data_transformed = np.transpose(data, (1, 2, 0))
+        self.data = data
+        
+        pred_image_class = predict_image_(image_path, model, config, True, model_processor = model_explain_processor)[1]
+        pred_image_class = np.argmax(pred_image_class)
+        
+        self.pred_image_class = pred_image_class        
+        self.image_path = image_path
+        self.model = model
+        
+        if not config['model_to_explain']['EfficientNet']:
+            cvmodel = self.model.cpu()
+            cvmodel.eval()
+        else:
+            cvmodel = self.model
+        feat_exp = create_feature_extractor(cvmodel, return_nodes=['avgpool'])
+        fc = cvmodel.fc
+        sam_model.eval()
+        feat_exp.eval()
+        cvmodel.eval()
+        
+        # load image
+        data_raw = cv2.imread(image_path)
+        data_raw = cv2.resize(data_raw, dim) 
+        data_raw = cv2.cvtColor(data_raw, cv2.COLOR_BGR2RGB)
+        
+        # create masks
+        input_image_copy = np.array(data_raw)
+        org_masks = gen_concept_masks(feature_extractor,input_image_copy)
+        self.org_masks = org_masks
+        
+        concept_masks = np.array([i['segmentation'].tolist() for i in org_masks])
+        self.concept_masks = concept_masks
+        
+        image_norm = transforms.Compose([
+            transforms.ToTensor(),
+            ])
+        
+        auc_mask, shap_list = samshap(cvmodel,data_transformed, pred_image_class,concept_masks,fc,feat_exp,image_norm=image_norm)
+        
+        self.auc_mask = auc_mask
+        self.shap_list = shap_list
+        
+    def get_mask(self, nums = 0):
+        
+        return self.auc_mask[nums]
+    
+    def plot_mask(self, nums = 0):
+        data_new = np.transpose(self.data, (1, 2, 0))
+
+        final_explain = (data_new*self.auc_mask[nums])
+
+        black = np.array([0, 0, 0], dtype=np.uint8)
+        gray = torch.tensor([230,230,230])
+        changed = final_explain
+        for i in range(changed.shape[0]):
+            for j in range(changed.shape[1]):
+                if (changed[i,j] == black).all():
+                    changed[i,j] = gray   
+    
+        return changed
+
+class shap_(): #TODO: Scotti, Apply SHAP in this class and orient on eac() class
+    def __init__(self):
+        self.model = None
+        self.image_path = None
+        self.concept_masks = None
+        self.org_masks = None
+        self.pred_image_class = None   
+        self.auc_mask = None
+        self.shap_list = None     
+        self.data = None
 class HiddenPrints:
     def __enter__(self):
         self._original_stdout = sys.stdout
@@ -178,7 +335,6 @@ def evaluate_explanation(model,
         """
         data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
         
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config["model_to_explain"]["EfficientNet"]:
             data_transformed_lime = data.copy()
             dim = (data.shape[0], data.shape[1])
@@ -256,7 +412,7 @@ def evaluate_explanation(model,
         img_array, img_raw = load_and_preprocess_image(image_path, config, plot = False, dim = dim, model = model_explain_processor, contrastivity = contrastivity)
             
         replacement_value = np.array([0, 0, 0])
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+        
         if config['model_to_explain']['EfficientNet'] or contrastivity: 
             # Apply the mask
             masked_image = np.copy(img_array)
@@ -291,9 +447,9 @@ def evaluate_explanation(model,
             with torch.no_grad():
                 output = model(input_batch)
             predictions = torch.nn.functional.softmax(output[0], dim=0)
-            predictions = predictions.detach().numpy().reshape(1, -1)
+            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
             
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             # Apply the mask
             masked_image = np.copy(img_array['pixel_values'][0])
             
@@ -312,22 +468,27 @@ def evaluate_explanation(model,
             masked_image = Image.fromarray(masked_image)
             masked_image_ = model_explain_processor(images=masked_image, return_tensors="pt")
             # Apply the mask
-            outputs = model(**masked_image_)
+            if torch.cuda.is_available():
+                masked_image_ = masked_image_.to('cuda')
+                model.to('cuda')
+
+            with torch.no_grad():
+                outputs = model(**masked_image_)
+            #outputs = model(**masked_image_)
             output = outputs.logits
             predictions = torch.nn.functional.softmax(output[0], dim=0)
-            predictions = predictions.detach().numpy().reshape(1, -1)
+            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
             
         decoded_predictions = decode_predictions(predictions)
         return decoded_predictions[0], masked_image
     
     def plot_image_background_to_save(data_local, mask):   
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config['model_to_explain']['EfficientNet']:
             changed = data_local*mask[:,:,np.newaxis]
         elif config['model_to_explain']['ResNet']:
             data_local = data_local.resize((mask.shape[0],mask.shape[1]))
             changed = data_local*mask[:,:,np.newaxis]
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             data_local = data_local.resize((mask.shape[0],mask.shape[1]))
             changed = data_local*mask[:,:,np.newaxis]
         changed = changed.astype(np.uint8)
@@ -377,8 +538,7 @@ def evaluate_explanation(model,
     path_background = "./Dataset/Test_examples/ocean-surface.jpeg"
         
     data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
-        
-    #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+            
     if config["model_to_explain"]["EfficientNet"]:
         data_transformed = data_raw.copy()
     elif config["model_to_explain"]["ResNet"]:
@@ -400,7 +560,7 @@ def evaluate_explanation(model,
     if config["evaluation"]["target_discrimination"]:
         contrastivity["Groundtruth_test"] = predict_image(image_path, model_test, config, False, dim = (300, 300), model_processor = model_explain_processor, contrastivity = True)[0][0]
 
-    #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+
     if config['model_to_explain']['EfficientNet']:
     #random / shuffled models
         model_shuffle = keras.models.clone_model(model)
@@ -451,6 +611,9 @@ def evaluate_explanation(model,
     explainer_SLIME = SLimeImageExplainer(feature_selection = "lasso_path")
     kernel_width = 0.25
     explainer_GLIME = LimeImageExplainerGLIME(kernel_width=kernel_width,verbose=False)
+    
+    eac_explainer = eac()
+
         
     print("-------- Initial Run --------")
 
@@ -459,7 +622,6 @@ def evaluate_explanation(model,
     if config["XAI_algorithm"]["DSEG"]:
         data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
         
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config["model_to_explain"]["EfficientNet"]: 
             data = data_.copy()
             data_segmentation= data_.copy()
@@ -551,7 +713,6 @@ def evaluate_explanation(model,
                 dseg_prediction, data_ = predict_merge_data(image_path, model_test, mask_normal_dseg_inverse, dim = (300, 300), model_explain_processor = model_explain_processor, contrastivity= True)
                 contrastivity["DSEG_deletion_check_contrast"] = dseg_prediction
             
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]:
                 dim = (data.shape[0], data.shape[1])
             elif config["model_to_explain"]["ResNet"]:
@@ -564,6 +725,10 @@ def evaluate_explanation(model,
             plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/dseg_segmentation.png", bbox_inches='tight', dpi=1200, pad_inches=0)
             
             labels_dseg, values_dseg, _ = zip(*explanation_dseg.local_exp[explanation_dseg.top_labels[0]])
+            segment_scores = dict(zip(labels, values))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["DSEG_gini"] = gini_coefficient
             
             dseg_segments = len(np.unique(values_dseg))
             to_sub = 0
@@ -629,7 +794,6 @@ def evaluate_explanation(model,
     if config["XAI_algorithm"]["LIME"]:   
         data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
         
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config["model_to_explain"]["EfficientNet"]: 
             data = data_.copy()
         elif config["model_to_explain"]["ResNet"]:
@@ -688,7 +852,7 @@ def evaluate_explanation(model,
                                                                 positive_only=config['lime_segmentation']['positive_only'], 
                                                                 num_features=config['lime_segmentation']['num_features_explanation'], 
                                                                 hide_rest=config['lime_segmentation']['hide_rest'])                                   
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+            
             if config["model_to_explain"]["EfficientNet"]:
                 data_transformed_lime = data.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -705,7 +869,10 @@ def evaluate_explanation(model,
             plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/lime_segments.png", bbox_inches='tight', dpi=1200, pad_inches=0)
             
             labels_lime, values_lime, _ = zip(*explanation_lime_fix.local_exp[explanation_lime_fix.top_labels[0]])
-            
+            segment_scores = dict(zip(labels_lime, values_lime))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["LIME_gini"] = gini_coefficient
             groundtruth["LIME_segments"] = len(np.unique(values_lime))
             
             if config["evaluation"]["preservation_check"]:
@@ -738,7 +905,7 @@ def evaluate_explanation(model,
             
     if config["XAI_algorithm"]["BayesLime"]:   
         data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+        
         if config["model_to_explain"]["EfficientNet"]: 
             data = data_.copy()
         elif config["model_to_explain"]["ResNet"]:
@@ -784,6 +951,12 @@ def evaluate_explanation(model,
                                                                 hide_rest=config['lime_segmentation']['hide_rest'])                                   
             
             labels_BayesLime, values_BayesLime, _ = zip(*explanation_BayesLime.local_exp[explanation_BayesLime.top_labels[0]])
+            
+            segment_scores = dict(zip(labels_BayesLime, values_BayesLime))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["BayesLIME_gini"] = gini_coefficient
+            
             explanation_BayesLime_fix = explanation_BayesLime
             groundtruth["BayesLIME_segments"] = len(np.unique(values_BayesLime))
             
@@ -817,7 +990,7 @@ def evaluate_explanation(model,
             
     if config["XAI_algorithm"]["SLIME"]:   
         data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
+        
         if config["model_to_explain"]["EfficientNet"]: 
             data = data_.copy()
         elif config["model_to_explain"]["ResNet"]:
@@ -861,6 +1034,12 @@ def evaluate_explanation(model,
                                                                 hide_rest=config['lime_segmentation']['hide_rest'])                                   
             
             labels_SLIME, values_SLIME, _ = zip(*explanation_SLIME.local_exp[explanation_SLIME.top_labels[0]])
+            
+            segment_scores = dict(zip(labels_SLIME, values_SLIME))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["SLIME_gini"] = gini_coefficient
+            
             explanation_SLIME_fix = explanation_SLIME
             groundtruth["SLIME_segments"] = len(np.unique(values_SLIME))
             
@@ -893,7 +1072,6 @@ def evaluate_explanation(model,
     if config["XAI_algorithm"]["GLIME"]:   
         data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
         
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config["model_to_explain"]["EfficientNet"]: 
             data = data_.copy()
         elif config["model_to_explain"]["ResNet"]:
@@ -943,6 +1121,12 @@ def evaluate_explanation(model,
                                                                 hide_rest=config['lime_segmentation']['hide_rest'])                                   
             
             labels_GLIME, values_GLIME= zip(*explanation_GLIME.local_exp[explanation_GLIME.top_labels[0]])
+            
+            segment_scores = dict(zip(labels_GLIME, values_GLIME))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["GLIME_gini"] = gini_coefficient
+            
             explanation_GLIME_fix = explanation_GLIME
             groundtruth["GLIME_segments"] = len(np.unique(values_GLIME))
             
@@ -974,6 +1158,112 @@ def evaluate_explanation(model,
             plt.axis('off')
             plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/initial_heat_GLIME.png", bbox_inches='tight', dpi=1200, pad_inches=0)
             
+    if config["XAI_algorithm"]["EAC"]:
+        data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+        
+        if config["model_to_explain"]["EfficientNet"]: 
+            data = data_.copy()
+        elif config["model_to_explain"]["ResNet"]:
+            data = data_.clone()
+        else:
+            data = data_.copy()
+        
+        with HiddenPrints():
+        #if True:
+            start_lime = time.time() 
+            
+            eac_explainer.explain_instance(image_path,
+                                model_p,
+                                segmentation_algorithm[1],
+                                model_explain_processor,
+                                config,
+                                segmentation_algorithm[0])
+            
+            end_lime = time.time()
+            
+            eac_segments = eac_explainer.auc_mask
+            empty_mask = np.zeros((eac_segments.shape[1], eac_segments.shape[2],1))
+            for i in range(len(eac_segments)):
+                empty_mask += eac_segments[i]
+                
+            plt.imshow(empty_mask[:,:,0])
+            
+            plt.axis('off')
+            plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/eac_segments.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+            
+            groundtruth["EAC_time"] = end_lime - start_lime
+            
+            local_features = config['lime_segmentation']['num_features_explanation']
+            if config["lime_segmentation"]["adaptive_num_features"]:
+                while local_features > 1:
+                    local_features = local_features -1
+                    mask_normal = eac_explainer.get_mask(local_features)
+                    
+                    eac_prediction, data_ = predict_merge_data(image_path, model, mask_normal, model_explain_processor = model_explain_processor)
+                    if eac_prediction[0][0] != groundtruth["Groundtruth"][0]:
+                        num_features = local_features+1
+                        break
+                    else:
+                        num_features = local_features
+                        
+            elif config["lime_segmentation"]["adaptive_fraction"]:
+                
+                values = eac_explainer.shap_list
+                
+                num_features = len(top_outliers(values)) 
+                if num_features > 3:
+                    num_features = 3
+                elif num_features < 1:
+                    num_features = 1
+            else:
+                num_features = config['lime_segmentation']['num_features_explanation']
+                
+            eac_masks = eac_explainer.get_mask(num_features)
+            eac_values = eac_explainer.shap_list
+            
+            eac_labels = [i for i in range(len(values))]
+            segment_scores = dict(zip(eac_labels, eac_values))
+            importance_values_list = list(segment_scores.values())
+            gini_coefficient = adapted_gini(importance_values_list)
+            output_completness["EAC_gini"] = gini_coefficient
+            
+            explanation_eac_fix = eac_explainer
+            groundtruth["EAC_segments"] = len(np.unique(eac_values))
+            
+            if config["evaluation"]["preservation_check"]:
+                eac_prediction, data_ = predict_merge_data(image_path, model, eac_masks, config = config, model_explain_processor = model_explain_processor)
+                plt.imshow(data_)
+                plt.axis('off')
+                plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/preservation_check_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                output_completness["EAC_preservation_check"] = eac_prediction
+                
+            if config["evaluation"]["target_discrimination"]:
+                eac_masks_int = np.array(eac_masks).astype('uint8')
+                eac_prediction, data_ = predict_merge_data(image_path, model_test, eac_masks_int, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
+                contrastivity["EAC_preservation_check_contrast"] = eac_prediction
+                
+            if config["evaluation"]["deletion_check"]:
+                    eac_masks_inverse = 1- np.array(eac_masks_int).astype(bool)
+                    eac_prediction, data_ = predict_merge_data(image_path, model, eac_masks_inverse, config = config, model_explain_processor = model_explain_processor)
+                    plt.imshow(data_)
+                    plt.axis('off')
+                    plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/deletion_check_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                    output_completness["EAC_deletion_check"] = eac_prediction
+                    
+            if config["evaluation"]["target_discrimination"]:
+                    eac_prediction, data_ = predict_merge_data(image_path, model_test, eac_masks_inverse, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
+                    contrastivity["EAC_deletion_check_contrast"] = eac_prediction
+
+
+            to_save_eac= eac_explainer.plot_mask(num_features)
+            plt.imshow(to_save_eac)
+            plt.axis('off')
+            plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/initial_heat_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+    
+    if config["XAI_algorithm"]["SHAP"]:
+        #TODO: SCotti apply class shap_() similar to eac
+        pass
+        
     if config["evaluation"]["stability"]:
         print("-------- Stability --------")
         
@@ -1215,8 +1505,8 @@ def evaluate_explanation(model,
                     plt.close()
         
         if config["XAI_algorithm"]["SLIME"]:
-            #with HiddenPrints():
-            if True:
+            with HiddenPrints():
+            #if True:
                 results_dictionary = {}
 
                 for iteration in range(config["evaluation"]["repetitions"]):
@@ -1398,7 +1688,53 @@ def evaluate_explanation(model,
 
                     to_save.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/stability_GLIME.png", bbox_inches='tight', dpi=1200, pad_inches=0)
                     plt.close()
+             
+        if config["XAI_algorithm"]["EAC"]:
+            with HiddenPrints():
+                results_dictionary = {}
+                df_data = []
+                for iteration in range(config["evaluation"]["repetitions"]):
+                    data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+                    eac_explainer.explain_instance(image_path,
+                                model_p,
+                                segmentation_algorithm[1],
+                                model_explain_processor,
+                                config,
+                                segmentation_algorithm[0])                                
+                
+                    values_eac = eac_explainer.shap_list
+                    df_data.append(values_eac)
+
+                # Convert to DataFrame
+                df = pd.DataFrame(df_data)
                     
+                consistency["EAC_stability"] = round(np.mean(df.std()),4)
+                # Now create the catplot with Seaborn
+                to_save = sns.catplot(data=df, kind='box', aspect=3)
+
+                # Set the font size for the axis descriptions (titles)
+                to_save.set_axis_labels('Superpixel', 'Importance', fontsize=12)
+
+                # Set the font size for the axis tick labels
+                for ax in to_save.axes.flat:
+                    ax.tick_params(labelsize=10)
+
+                # Rotate and select x-axis labels for better readability
+                positions = plt.xticks()[0]
+                labels = [lbl.get_text() for lbl in plt.gca().get_xticklabels()]
+                selected_positions = positions[::2]
+                selected_labels = labels[::2]
+                plt.xticks(selected_positions, selected_labels, rotation=45, fontsize=10)  # Set the fontsize here as well
+
+                plt.gcf().set_size_inches(5, 5)
+                
+                to_save.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/stability_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                plt.close()       
+    
+        if config["XAI_algorithm"]["SHAP"]:
+            #TODO: SCotti apply class shap_() similar to eac
+            pass
+    
     if config["evaluation"]["model_randomization"]:
         
         print("-------- Model Randomization --------")
@@ -1432,6 +1768,9 @@ def evaluate_explanation(model,
                                                                             hide_rest=config['lime_segmentation']['hide_rest'])
 
                 random_dseg_prediction, data_ = predict_merge_data(image_path, model, mask_shuffle, config = config, model_explain_processor = model_explain_processor)
+                plt.imshow(mark_boundaries(temp_shuffle.astype(int) / 2 + 0.5, mask_shuffle.astype(int)))
+                plt.axis('off')
+                plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/Shuffle_dseg.png", bbox_inches='tight', dpi=1200, pad_inches=0)
 
             correctness["DSEG_prediction_model_random"] = random_dseg_prediction
             
@@ -1620,6 +1959,33 @@ def evaluate_explanation(model,
                 
             correctness["GLIME_prediction_model_random"] = random_lime_prediction
     
+        if config["XAI_algorithm"]["EAC"]:
+            data_, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+
+            with HiddenPrints():
+            #if True:
+                
+                eac_explainer.explain_instance(image_path,
+                                    model_shuffled_p,
+                                    segmentation_algorithm[1],
+                                    model_explain_processor,
+                                    config,
+                                    segmentation_algorithm[0])
+                
+                eac_masks = eac_explainer.get_mask(num_features)
+                random_eac_prediction, data_ = predict_merge_data(image_path, model, eac_masks, config = config, model_explain_processor = model_explain_processor)
+
+                to_save_eac= eac_explainer.plot_mask(num_features)
+                plt.imshow(to_save_eac)
+                plt.axis('off')
+                plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/Shuffle_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                
+                correctness["EAC_prediction_model_random"] = random_eac_prediction     
+    
+        if config["XAI_algorithm"]["SHAP"]:
+            #TODO: SCotti apply class shap_() similar to eac
+            pass
+    
     if config["evaluation"]["explanation_randomization"]:
         
         print("-------- Explanation Randomization --------")
@@ -1633,8 +1999,8 @@ def evaluate_explanation(model,
             explainer = LimeImageExplainerDynamic()
             data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
             
-            #with HiddenPrints():
-            if True:            
+            with HiddenPrints():
+            #if True:            
                 explanation = explainer_dseg.explain_instance(data, 
                                                     model_p, 
                                                     segmentation_algorithm[0], 
@@ -1669,8 +2035,8 @@ def evaluate_explanation(model,
             explainer = LimeImageExplainer()
             data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
             
-            #with HiddenPrints():
-            if True:   
+            with HiddenPrints():
+            #if True:   
                 explanation = explainer.explain_instance(data, 
                                                         model_p, 
                                                         None,
@@ -1707,8 +2073,8 @@ def evaluate_explanation(model,
             explainer_BayesLime = LimeImageExplainer()
             data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
                                     
-            #with HiddenPrints():
-            if True:    
+            with HiddenPrints():
+            #if True:    
                 if not config["lime_segmentation"]["all_dseg"]:
                     explanation = explainer_BayesLime.explain_instance(data, 
                                                                 model_p, 
@@ -1761,8 +2127,8 @@ def evaluate_explanation(model,
                 data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
            
                                             
-                #with HiddenPrints():
-                if True:   
+                with HiddenPrints():
+                #if True:   
                     if not config["lime_segmentation"]["all_dseg"]:
                         explanation = explainer_SLIME.explain_instance(data, 
                                                                 model_p,
@@ -1812,8 +2178,8 @@ def evaluate_explanation(model,
                 data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
             
 
-                #with HiddenPrints():
-                if True:    
+                with HiddenPrints():
+                #if True:    
                     if not config["lime_segmentation"]["all_dseg"]:
                         explanation = explainer_GLIME.explain_instance(data, 
                                                                 model_p, 
@@ -1860,13 +2226,11 @@ def evaluate_explanation(model,
                 plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/Random_GLIME.png", bbox_inches='tight', dpi=1200, pad_inches=0)
             
                 correctness["GLIME_prediction_eval_random"] = random_lime_prediction 
-                
-                
+                               
     if config["evaluation"]["incremental_deletion"]:
         print("-------- Incremental Deletion --------")
         ground_truth = predict_image(image_path, model, config , False, model_processor = model_explain_processor)[0][0]
         to_save_placeholder = to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/placeholder.png"
-        count = 0
         if config["XAI_algorithm"]["DSEG"]:
             print("-------- DSEG --------")
             
@@ -1875,15 +2239,25 @@ def evaluate_explanation(model,
             with HiddenPrints(): 
                 fraction_dseg = 1
                 start_indices = 0
+                old_result = ground_truth
                 while fraction_dseg >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(indices):
                     local_indices = indices[start_indices+1:]
                     start_indices +=1
                     merged_image, fraction_dseg = replace_background(image_path, None, local_indices, config, data_driven = True)
                     merged_image.save(to_save_placeholder)
                     
-                    result_model_dseg = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)[0][0]
-                    if result_model_dseg[0] == ground_truth[0]:
-                        area_dseg = area_dseg + (fraction_dseg*float(result_model_dseg[2]))
+                    result_model_dseg = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_dseg:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_dseg = area_dseg + (fraction_dseg*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_dseg = area_dseg + (fraction_dseg*float(result[2]))
                         
                 correctness["DSEG_incremental_deletion"] = area_dseg              
                 
@@ -1895,15 +2269,25 @@ def evaluate_explanation(model,
             with HiddenPrints(): 
                 fraction_lime = 1
                 start_indices = 0
+                old_result = ground_truth
                 while fraction_lime >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(indices):
                     local_indices = indices[start_indices+1:]
                     start_indices +=1
                     merged_image, fraction_lime = replace_background(image_path, None, local_indices, config)
                     merged_image.save(to_save_placeholder)
                     
-                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)[0][0]
-                    if result_model_lime[0] == ground_truth[0]:
-                        area_lime = area_lime + (fraction_lime*float(result_model_lime[2]))
+                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_lime:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_lime = area_lime + (fraction_lime*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_lime = area_lime + (fraction_lime*float(result[2]))
                         
                 correctness["LIME_incremental_deletion"] = area_lime     
                 
@@ -1915,15 +2299,25 @@ def evaluate_explanation(model,
             with HiddenPrints(): 
                 fraction_lime = 1
                 start_indices = 0
+                old_result = ground_truth
                 while fraction_lime >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(indices):
                     local_indices = indices[start_indices+1:]
                     start_indices +=1
                     merged_image, fraction_lime = replace_background(image_path, None, local_indices, config)
                     merged_image.save(to_save_placeholder)
                     
-                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)[0][0]
-                    if result_model_lime[0] == ground_truth[0]:
-                        area_lime = area_lime + (fraction_lime*float(result_model_lime[2]))
+                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_lime:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_lime = area_lime + (fraction_lime*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_lime = area_lime + (fraction_lime*float(result[2]))
                         
                 correctness["BayesLIME_incremental_deletion"] = area_lime    
                 
@@ -1935,15 +2329,25 @@ def evaluate_explanation(model,
             with HiddenPrints(): 
                 fraction_lime = 1
                 start_indices = 0
+                old_result = ground_truth
                 while fraction_lime >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(indices):
                     local_indices = indices[start_indices+1:]
                     start_indices +=1
                     merged_image, fraction_lime = replace_background(image_path, None, local_indices, config, data_driven = config["lime_segmentation"]["all_dseg"])
                     merged_image.save(to_save_placeholder)
                     
-                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)[0][0]
-                    if result_model_lime[0] == ground_truth[0]:
-                        area_lime = area_lime + (fraction_lime*float(result_model_lime[2]))
+                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_lime:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_lime = area_lime + (fraction_lime*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_lime = area_lime + (fraction_lime*float(result[2]))
                         
                 correctness["SLIME_incremental_deletion"] = area_lime           
                 
@@ -1955,17 +2359,100 @@ def evaluate_explanation(model,
             with HiddenPrints(): 
                 fraction_lime = 1
                 start_indices = 0
+                old_result = ground_truth
                 while fraction_lime >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(indices):
                     local_indices = indices[start_indices+1:]
                     start_indices +=1
                     merged_image, fraction_lime = replace_background(image_path, None, local_indices, config, data_driven = config["lime_segmentation"]["all_dseg"])
                     merged_image.save(to_save_placeholder)
                     
-                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)[0][0]
-                    if result_model_lime[0] == ground_truth[0]:
-                        area_lime = area_lime + (fraction_lime*float(result_model_lime[2]))
+                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_lime:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_lime = area_lime + (fraction_lime*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_lime = area_lime + (fraction_lime*float(result[2]))
                         
                 correctness["GLIME_incremental_deletion"] = area_lime   
+        
+        if config["XAI_algorithm"]["EAC"]:
+            print("-------- EAC --------")
+            
+            #indices = get_segments(values_eac, len(np.unique(values_eac)))
+            area_lime = 0 # Area multiplied by the fraction of the image with confidence of model
+            with HiddenPrints(): 
+                fraction_lime = 1
+                start_indices = -1
+                old_result = ground_truth
+                while fraction_lime >= 1-config['evaluation']['incremental_deletion_fraction'] and start_indices <= len(eac_values):
+                    start_indices +=1
+                    data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+        
+                    if config["model_to_explain"]["EfficientNet"]:
+                        data_transformed_lime = data.copy()
+                        dim = (data.shape[0], data.shape[1])
+                    elif config["model_to_explain"]["ResNet"]:
+                        data_transformed_lime = data.clone().detach().numpy()
+                        data_transformed_lime = data_transformed_lime.transpose(1,2,0)
+                        #data_transformed = data_raw.resize((data_transformed.shape[0],data_transformed.shape[1]))
+                        dim = (data.shape[1], data.shape[2])
+                    else:
+                        data_transformed_lime = data.copy()
+                        data_transformed_lime = np.array(data_transformed_lime['pixel_values'][0])
+                        data_transformed_lime = data_transformed_lime.transpose(1,2,0)
+                        dim = (data_transformed_lime.shape[0], data_transformed_lime.shape[1])
+                        
+                    image_dim = load_img(image_path, target_size=dim)
+
+                    background_path = None
+                    if background_path != None:
+                        background_raw = load_img(background_path, target_size=dim)
+                        
+                    image_array = np.array(image_dim)
+                    if background_path != None:
+                        background_array = np.array(background_raw)
+                    else:
+                        background_array = np.zeros(image_array.shape)
+
+                    altered_count = 0
+                    test_array =  eac_explainer.get_mask(start_indices) 
+                    for i in range(test_array.shape[0]):
+                        for j in range(test_array.shape[1]):
+                            if not test_array[i, j]:
+                                image_array[i, j, :] = background_array[i, j, :]
+                                altered_count += 1
+
+                    fraction_altered = altered_count / (test_array.shape[0] * test_array.shape[1])
+
+                    merged_image = Image.fromarray(image_array)
+
+                    fraction_lime = 1 - fraction_altered
+                    merged_image.save(to_save_placeholder)
+                    
+                    result_model_lime = predict_image(to_save_placeholder, model, config , False, model_processor = model_explain_processor)
+                    result = None
+                    for subarray in result_model_lime:
+                        for item in subarray:
+                            if item[0] == groundtruth:
+                                result = item
+                                break
+                    if result == None:
+                        area_lime = area_lime + (fraction_lime*float(old_result[2]))     
+                    elif result[0] == ground_truth[0]:
+                        old_result = result
+                        area_lime = area_lime + (fraction_lime*float(result[2]))
+                        
+                correctness["EAC_incremental_deletion"] = area_lime 
+            
+        if config["XAI_algorithm"]["SHAP"]:
+            #TODO: SCotti apply class shap_() similar to eac
+            pass    
         
     if config["evaluation"]["single_deletion"]:
 
@@ -1974,16 +2461,29 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["DSEG"]:
             print("-------- DSEG --------")
             
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                labels, values, _ = zip(*explanation_dseg_fix.local_exp[explanation_dseg_fix.top_labels[0]])
+                
+                local_features = len(top_outliers(values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+            
             indices = get_segments(explanation_dseg_fix.local_exp[explanation_dseg_fix.top_labels[0]], local_features)
+            #if True:
             with HiddenPrints(): 
                 merged_image, fraction_dseg = replace_background(image_path, path_background, indices, config, data_driven = True)
-                
+                print('DSEG', fraction_dseg, indices)
                 if fraction_dseg < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
                     start_count_segments = local_features
                     while fraction_dseg < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments <len(np.unique(values_lime)):
                         start_count_segments += 1
                         indices = get_segments(explanation_dseg_fix.local_exp[explanation_dseg_fix.top_labels[0]], start_count_segments)
                         merged_image, fraction_dseg = replace_background(image_path, path_background, indices, config, data_driven = True)
+                        print('DSEG', fraction_dseg, indices)
                 else:
                     while fraction_dseg > config["evaluation"]["fraction"] + config["evaluation"]["fraction_std"] and len(indices) >1:
                         indices = indices[:-1]
@@ -2006,14 +2506,26 @@ def evaluate_explanation(model,
 
         if config["XAI_algorithm"]["LIME"]:
             print("-------- LIME --------")
-            indices = get_segments(explanation_lime_fix.local_exp[explanation_lime_fix.top_labels[0]], config['lime_segmentation']['num_features_explanation'])
+            
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                labels, values, _ = zip(*explanation_lime_fix.local_exp[explanation_lime_fix.top_labels[0]])
+                
+                local_features = len(top_outliers(values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+            
+            indices = get_segments(explanation_lime_fix.local_exp[explanation_lime_fix.top_labels[0]], local_features)
             
             
             with HiddenPrints(): 
                 merged_image, fraction_lime = replace_background(image_path, path_background, indices, config)
                 
                 if fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
-                    start_count_segments =  config['lime_segmentation']['num_features_explanation']
+                    start_count_segments = local_features
                     while fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments < len(np.unique(values_lime)):
                         start_count_segments += 1
                         indices = get_segments(explanation_lime_fix.local_exp[explanation_lime_fix.top_labels[0]], start_count_segments)
@@ -2042,13 +2554,25 @@ def evaluate_explanation(model,
 
         if config["XAI_algorithm"]["BayesLime"]:
             print("-------- Bayes-LIME --------")
-            indices = get_segments(explanation_BayesLime_fix.local_exp[explanation_BayesLime_fix.top_labels[0]], config['lime_segmentation']['num_features_explanation'])
+            
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                labels, values, _ = zip(*explanation_BayesLime_fix.local_exp[explanation_BayesLime_fix.top_labels[0]])
+                
+                local_features = len(top_outliers(values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+                
+            indices = get_segments(explanation_BayesLime_fix.local_exp[explanation_BayesLime_fix.top_labels[0]], local_features)
  
             with HiddenPrints(): 
                 merged_image, fraction_lime = replace_background(image_path, path_background, indices, config, data_driven = config["lime_segmentation"]["all_dseg"])
                 
                 if fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
-                    start_count_segments =  config['lime_segmentation']['num_features_explanation']
+                    start_count_segments = local_features
                     while fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments < len(np.unique(values_lime)):
                         start_count_segments += 1
                         indices = get_segments(explanation_BayesLime_fix.local_exp[explanation_BayesLime_fix.top_labels[0]], start_count_segments)
@@ -2076,13 +2600,25 @@ def evaluate_explanation(model,
                     
         if config["XAI_algorithm"]["SLIME"]:
             print("-------- SLIME --------")
-            indices = get_segments(explanation_SLIME_fix.local_exp[explanation_SLIME_fix.top_labels[0]], config['lime_segmentation']['num_features_explanation'])
+            
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                labels, values, _ = zip(*explanation_SLIME_fix.local_exp[explanation_SLIME_fix.top_labels[0]])
+                
+                local_features = len(top_outliers(values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+            
+            indices = get_segments(explanation_SLIME_fix.local_exp[explanation_SLIME_fix.top_labels[0]], local_features)
 
             with HiddenPrints(): 
                 merged_image, fraction_lime = replace_background(image_path, path_background, indices, config, data_driven = config["lime_segmentation"]["all_dseg"])
                 
                 if fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
-                    start_count_segments =  config['lime_segmentation']['num_features_explanation']
+                    start_count_segments = local_features
                     while fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments < len(np.unique(values_lime)):
                         start_count_segments += 1
                         indices = get_segments(explanation_SLIME_fix.local_exp[explanation_SLIME_fix.top_labels[0]], start_count_segments)
@@ -2110,13 +2646,26 @@ def evaluate_explanation(model,
 
         if config["XAI_algorithm"]["GLIME"]:
             print("-------- GLIME --------")
-            indices = get_segments(explanation_GLIME_fix.local_exp[explanation_GLIME_fix.top_labels[0]], config['lime_segmentation']['num_features_explanation'])
+            
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                labels, values = zip(*explanation_GLIME_fix.local_exp[explanation_GLIME_fix.top_labels[0]])
+                
+                local_features = len(top_outliers(values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+            
+            
+            indices = get_segments(explanation_GLIME_fix.local_exp[explanation_GLIME_fix.top_labels[0]], local_features)
   
             with HiddenPrints(): 
                 merged_image, fraction_lime = replace_background(image_path, path_background, indices, config, data_driven = config["lime_segmentation"]["all_dseg"])
                 
                 if fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
-                    start_count_segments =  config['lime_segmentation']['num_features_explanation']
+                    start_count_segments = local_features
                     while fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments < len(np.unique(values_lime)):
                         start_count_segments += 1
                         indices = get_segments(explanation_GLIME_fix.local_exp[explanation_GLIME_fix.top_labels[0]], start_count_segments)
@@ -2141,6 +2690,97 @@ def evaluate_explanation(model,
                     lime_prediction = predict_image(to_save_lime, model_test, config , False, dim = (300, 300), model_processor = model_explain_processor, contrastivity= True)[0][0]
                     contrastivity["GLIME_single_deletion"] = lime_prediction                               
     
+        if config["XAI_algorithm"]["EAC"]:
+            print("-------- EAC --------")
+            
+            if config["lime_segmentation"]["adaptive_fraction"]:
+                
+                local_features = len(top_outliers(eac_values)) 
+                if local_features > 3:
+                    local_features = 3
+                elif local_features < 1:
+                    local_features = 1
+            else:
+                local_features = config['lime_segmentation']['num_features_explanation']
+            
+            #indices = get_segments(values_eac, len(np.unique(values_eac)))
+            with HiddenPrints(): 
+            #if True:
+                data, data_raw = load_and_preprocess_image(image_path, config, plot = False, model = model_explain_processor)
+        
+                def replace_background_local(image_path, path_background, local_features, config, eac_explainer):
+                    if config["model_to_explain"]["EfficientNet"]:
+                        data_transformed_lime = data.copy()
+                        dim = (data.shape[0], data.shape[1])
+                    elif config["model_to_explain"]["ResNet"]:
+                        data_transformed_lime = data.clone().detach().numpy()
+                        data_transformed_lime = data_transformed_lime.transpose(1,2,0)
+                        #data_transformed = data_raw.resize((data_transformed.shape[0],data_transformed.shape[1]))
+                        dim = (data.shape[1], data.shape[2])
+                    else:
+                        data_transformed_lime = data.copy()
+                        data_transformed_lime = np.array(data_transformed_lime['pixel_values'][0])
+                        data_transformed_lime = data_transformed_lime.transpose(1,2,0)
+                        dim = (data_transformed_lime.shape[0], data_transformed_lime.shape[1])
+                            
+                    image_dim = load_img(image_path, target_size=dim)
+
+                    background_path = path_background
+                    if background_path != None:
+                        background_raw = load_img(background_path, target_size=dim)
+                            
+                    image_array = np.array(image_dim)
+                    if background_path != None:
+                        background_array = np.array(background_raw)
+                    else:
+                        background_array = np.zeros(image_array.shape)
+
+                    altered_count = 0
+                    test_array =  eac_explainer.get_mask(local_features) 
+                    for i in range(test_array.shape[0]):
+                        for j in range(test_array.shape[1]):
+                            if not test_array[i, j]:
+                                image_array[i, j, :] = background_array[i, j, :]
+                                altered_count += 1
+
+                    fraction_altered = altered_count / (test_array.shape[0] * test_array.shape[1])
+
+                    merged_image = Image.fromarray(image_array)
+
+                    fraction_lime = 1 - fraction_altered
+                    return merged_image, fraction_lime
+                
+                merged_image, fraction_lime = replace_background_local(image_path, path_background, local_features, config, eac_explainer)
+
+                start_count_segments = local_features
+                if fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"]:
+                    while fraction_lime < config["evaluation"]["fraction"] - config["evaluation"]["fraction_std"] and start_count_segments < len(eac_values):
+                        start_count_segments += 1
+                        merged_image, fraction_lime = replace_background_local(image_path, path_background, start_count_segments, config, eac_explainer)
+                else:
+                    while fraction_lime > config["evaluation"]["fraction"] + config["evaluation"]["fraction_std"] and start_count_segments >1:
+                        start_count_segments -= 1
+                        merged_image, fraction_lime = replace_background_local(image_path, path_background, start_count_segments, config, eac_explainer)                    
+                
+                to_save_lime = to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/merged_EAC.png"
+                merged_image.save(to_save_lime)
+                
+                result_model_lime = predict_image(to_save_lime, model, config , False, model_processor = model_explain_processor)[0][0]
+
+                prediction_difference_lime = compare_predictions(ground_truth, result_model_lime)
+                correctness["EAC_prediction_single_deletion"] = result_model_lime
+                
+                if config["evaluation"]["size"]:
+                    correctness["EAC_Compactness"] = fraction_lime
+                    
+                if config["evaluation"]["target_discrimination"]:
+                    lime_prediction = predict_image(to_save_lime, model_test, config , False, dim = (300, 300), model_processor = model_explain_processor, contrastivity= True)[0][0]
+                    contrastivity["EAC_single_deletion"] = lime_prediction 
+    
+        if config["XAI_algorithm"]["SHAP"]:
+            #TODO: SCotti apply class shap_() similar to eac
+            pass    
+    
     if config["evaluation"]["variation_stability"]:        
         
         print("-------- Variation Stability --------")
@@ -2151,8 +2791,6 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["DSEG"]:
             print("-------- DSEG --------")
             altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]: 
                 altered_data = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2204,10 +2842,9 @@ def evaluate_explanation(model,
                     dseg_prediction, data_ = predict_merge_data(image_path_altered, model_test, mask_normal_dseg_inverse, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
                     contrastivity["DSEG_deletion_noise_check"] = dseg_prediction
                 
-                #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
                 if config["model_to_explain"]["EfficientNet"]:
                     dim = (altered_data_.shape[0], altered_data_.shape[1])
-                elif config["model_to_explain"]["VisionTransformer"]:
+                elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     data_transformed_lime = altered_data_.copy()
                     data_transformed_lime = np.array(data_transformed_lime['pixel_values'][0])
                     data_transformed_lime = data_transformed_lime.transpose(1,2,0)
@@ -2224,7 +2861,6 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["LIME"]:
             print("-------- LIME --------")
             altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]: 
                 altered_data = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2277,7 +2913,6 @@ def evaluate_explanation(model,
                     lime_prediction, data_ = predict_merge_data(image_path_altered, model_test, mask_normal_lime_inverse, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
                     contrastivity["LIME_deletion_noise_check"] = lime_prediction
 
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]:
                 data_transformed_lime = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2295,8 +2930,6 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["BayesLime"]:
             print("-------- Bayes-LIME --------")
             altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]: 
                 altered_data = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2365,8 +2998,6 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["SLIME"]:
             print("-------- SLIME --------")
             altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]: 
                 altered_data = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2433,8 +3064,6 @@ def evaluate_explanation(model,
         if config["XAI_algorithm"]["GLIME"]:
             print("-------- GLIME --------")
             altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]: 
                 altered_data = altered_data_.copy()
             elif config["model_to_explain"]["ResNet"]:
@@ -2506,6 +3135,57 @@ def evaluate_explanation(model,
                     lime_prediction, data_ = predict_merge_data(image_path_altered, model_test, mask_normal_lime_inverse, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
                     contrastivity["GLIME_deletion_noise_check"] = lime_prediction
 
+        if config["XAI_algorithm"]["EAC"]:
+            
+            print("-------- EAC --------")
+            
+            
+            altered_data_, altered_data_raw = load_and_preprocess_image(image_path_altered, config, plot = False, model = model_explain_processor)
+            if config["model_to_explain"]["EfficientNet"]: 
+                altered_data = altered_data_.copy()
+            elif config["model_to_explain"]["ResNet"]:
+                altered_data = altered_data_.clone()
+            else:
+                altered_data = altered_data_.copy()          
+            
+            eac_explainer.explain_instance(image_path_altered,
+                                model_p,
+                                segmentation_algorithm[1],
+                                model_explain_processor,
+                                config,
+                                segmentation_algorithm[0])
+            
+            eac_masks = eac_explainer.get_mask(num_features)
+            eac_values = eac_explainer.shap_list
+            
+            if config["evaluation"]["preservation_check"]:
+                lime_prediction, data_ = predict_merge_data(image_path_altered, model, eac_masks, config = config, model_explain_processor = model_explain_processor)
+                plt.imshow(data_)
+                plt.axis('off')
+                plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/preservation_noise_check_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                consistency["EAC_preservation_noise_check"] = lime_prediction
+                
+            if config["evaluation"]["target_discrimination"]:
+                    eac_masks_int = np.array(eac_masks).astype('uint8')
+                    lime_prediction, data_ = predict_merge_data(image_path_altered, model_test, eac_masks_int, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
+                    contrastivity["EAC_preservation_noise_check"] = lime_prediction
+                
+            if config["evaluation"]["deletion_check"]:
+                    mask_normal_lime_inverse = 1- np.array(eac_masks_int).astype(bool)
+                    lime_prediction, data_ = predict_merge_data(image_path_altered, model, mask_normal_lime_inverse, config = config, model_explain_processor = model_explain_processor)
+                    plt.imshow(data_)
+                    plt.axis('off')
+                    plt.savefig(to_save_path+image_path.rsplit('.', 1)[0].split('/')[-1]+"/deletion_noise_check_EAC.png", bbox_inches='tight', dpi=1200, pad_inches=0)
+                    consistency["EAC_deletion_noise_check"] = lime_prediction
+                    
+            if config["evaluation"]["target_discrimination"]:
+                    mask_normal_lime_inverse = 1- np.array(eac_masks_int).astype(bool)
+                    lime_prediction, data_ = predict_merge_data(image_path_altered, model_test, mask_normal_lime_inverse, dim = (300, 300), config = config, model_explain_processor = model_explain_processor, contrastivity= True)
+                    contrastivity["EAC_deletion_noise_check"] = lime_prediction
+         
+        if config["XAI_algorithm"]["SHAP"]:
+            #TODO: SCotti apply class shap_() similar to eac
+            pass                
     
     evaluation_results["groundtruth"] = groundtruth
     evaluation_results["correctness"] = correctness
@@ -2821,7 +3501,7 @@ def create_pandas_df(dictionary, to_save_path=None, id=0):
     pd_res = pd.DataFrame.from_dict(df).T
     return pd_res
         
-def evaluate_sub_image(sub_image, dataset_path, date_path, model_eff, feature_extractor, model, model_test, config, model_explain_processor = None):
+def evaluate_sub_image(sub_image, dataset_path, date_path, model_eff, feature_extractor, model, model_test, config, folder, model_explain_processor = None):
     """
     Evaluates a sub-image using the given parameters.
 
@@ -2840,7 +3520,7 @@ def evaluate_sub_image(sub_image, dataset_path, date_path, model_eff, feature_ex
         tuple: A tuple containing the sub-image filename and the evaluation results.
     """
     # Create a directory for the sub-image results
-    pathlib.Path('./Dataset/Results/'+date_path+"/"+sub_image.rsplit('.', 1)[0]).mkdir(parents=True, exist_ok=True)
+    pathlib.Path('./Dataset/'+folder+'/'+date_path+"/"+sub_image.rsplit('.', 1)[0]).mkdir(parents=True, exist_ok=True)
     
     # Get the local image path
     local_image_path = dataset_path + sub_image
@@ -2849,7 +3529,7 @@ def evaluate_sub_image(sub_image, dataset_path, date_path, model_eff, feature_ex
         test = load_img(local_image_path)
         
         print("--------------------", sub_image, "--------------------")
-        to_save_path = './Dataset/Results/'+date_path+'/'
+        to_save_path = './Dataset/'+folder+'/'+date_path+'/'
         
         # Evaluate the explanation for the image
         results = evaluate_explanation(model_eff, 
@@ -3076,12 +3756,16 @@ class ColoredDF:
     
     def count_cells_output_completeness(self, df):
         res_df = self.res_df
+        
         # Filter to get only columns with 'prediction' in their name
         for index, row in df.iterrows():
+            #print(index, row)
             # Filter to get only columns with 'prediction' in their name
             prediction_cols = [col for col in res_df.columns if 'preservation' in col]
             # Calculate max value only for those columns
             true_value = row['Groundtruth'][0]
+            #rint(prediction_cols)
+            
             true_val_max = np.max([float(item[2]) for item in row[prediction_cols]])
 
             
@@ -3163,6 +3847,7 @@ class ColoredDF:
     def count_cells_consistency(self, df):
         res_df = self.res_df
         # Filter to get only columns with 'prediction' in their name
+        
         for index, row in df.iterrows():
             # Filter to get only columns with 'prediction' in their name
             prediction_cols = [col for col in res_df.columns if 'preservation' in col]

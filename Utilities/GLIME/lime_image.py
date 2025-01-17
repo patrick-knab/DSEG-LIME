@@ -199,14 +199,14 @@ class LimeImageExplainerGLIME(object):
             image_data_labels = image.copy()
         elif config['model_to_explain']['ResNet']:
             fudged_image = image.clone()
-            fudged_image = fudged_image.detach().numpy()
+            fudged_image = fudged_image.cpu().detach().numpy()
             dim_local = (image.shape[1], image.shape[2])
             fudged_image = fudged_image.transpose(1,2,0)
             image_data_labels = fudged_image.copy()
             if not config['lime_segmentation']['all_dseg']:
                 image = fudged_image
             
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             fudged_image = image.copy()
             fudged_image = fudged_image['pixel_values'].squeeze(0).permute(1,2,0).numpy()
             dim_local = (fudged_image.shape[0], fudged_image.shape[1])
@@ -216,6 +216,8 @@ class LimeImageExplainerGLIME(object):
         
         if random_seed is None:
             random_seed = self.random_state.randint(0, high=1000)
+
+        top_labels_list = []
 
         for iter in range(iterations):
             random_init = False
@@ -311,8 +313,9 @@ class LimeImageExplainerGLIME(object):
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
         
-            top_labels_list = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
-        print(top_labels_list)
+            top_labels_list_list = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            for i in top_labels_list_list:
+                top_labels_list.append(i)
         return ret_exp
 
     def data_labels(self,
@@ -385,7 +388,7 @@ class LimeImageExplainerGLIME(object):
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -396,12 +399,12 @@ class LimeImageExplainerGLIME(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-                elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+                elif config["model_to_explain"]["VisionTransformer"] or config["model_to_explain"]["ConvNext"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     if torch.cuda.is_available():
@@ -413,7 +416,7 @@ class LimeImageExplainerGLIME(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
                 labels.extend(preds)
                 imgs = []
         if len(imgs) > 0:
@@ -423,7 +426,7 @@ class LimeImageExplainerGLIME(object):
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -434,12 +437,12 @@ class LimeImageExplainerGLIME(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-            elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+            elif config["model_to_explain"]["VisionTransformer"] or config["model_to_explain"]["ConvNext"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     
@@ -452,7 +455,7 @@ class LimeImageExplainerGLIME(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
             labels.extend(preds)
             
         # New for DSEG  ----------------

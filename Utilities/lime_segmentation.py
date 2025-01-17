@@ -186,45 +186,47 @@ class LimeImageExplainerDynamicExperimentation(object):
             An ImageExplanation object (see lime_image.py) with the corresponding
             explanations.
         """
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-    
+        
         if config['model_to_explain']['EfficientNet']:
             fudged_image = image.copy()
             dim_local = (image.shape[0], image.shape[1])
             image_data_labels = image.copy()
         elif config['model_to_explain']['ResNet']:
             fudged_image = image.clone()
-            fudged_image = fudged_image.detach().numpy()
+            fudged_image = fudged_image.cpu().detach().numpy()
             dim_local = (image.shape[1], image.shape[2])
             fudged_image = fudged_image.transpose(1,2,0)
             image_data_labels = fudged_image.copy()
             if not config['lime_segmentation']['all_dseg']:
                 image = fudged_image
             
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             fudged_image = image.copy()
             fudged_image = fudged_image['pixel_values'].squeeze(0).permute(1,2,0).numpy()
             dim_local = (fudged_image.shape[0], fudged_image.shape[1])
             image_data_labels = fudged_image.copy()
             if not config['lime_segmentation']['all_dseg']:
                 image = fudged_image
-                
+          
+        fudged_image_clean = fudged_image.copy()  
+              
         if random_seed is None:
             random_seed = self.random_state.randint(0, high=1000)
 
+        top_labels_list = []
+        
         for iter in range(iterations):
             random_init = False
             if iter == 0:
                 if segmentation_fn:
-                    segments_seed = segmentation_fn(image, config)
+                    segments_seed_org = segmentation_fn(image, config)
                 else:
-                    segments_seed, raw_Segments, hierarchy_dict, links_ = segmentation_fn_seed(image, image_path, config, feature_extractor, model, dim = dim_local)
-
-                segments = np.copy(segments_seed)
-                n_samples_max = (2**len(np.unique(segments_seed)))
+                    segments_seed_org, raw_Segments, hierarchy_dict, links_ = segmentation_fn_seed(image, image_path, config, feature_extractor, model, dim = dim_local)
+                segments = np.copy(segments_seed_org)
+                n_samples_max = (2**len(np.unique(segments_seed_org)))
                 if n_samples_max < num_samples:
                     num_samples_local = n_samples_max  
-                    n_features = len(np.unique(segments_seed))
+                    n_features = len(np.unique(segments_seed_org))
                     data_samples = list(itertools.product([0, 1], repeat= n_features))
                     data_samples = np.array(data_samples).reshape((num_samples_local, n_features))
                     
@@ -235,7 +237,7 @@ class LimeImageExplainerDynamicExperimentation(object):
                 if segmentation_fn:
                     segments_seed = segmentation_fn(image, config)
                 else:
-                    segments_seed = segmentation_fn_dynamic(segments_seed, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
+                    segments_seed, links_ = segmentation_fn_dynamic(segments_seed_org, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
                 segments = segments_seed.copy()
                 num_samples_local = num_samples
             random_init = True
@@ -246,6 +248,7 @@ class LimeImageExplainerDynamicExperimentation(object):
                     .reshape((num_samples_local, n_features))
                 
             if hide_color is None:
+                fudged_image = fudged_image_clean.copy()
                 for x in np.unique(segments):
                     fudged_image[segments == x] = (
                         np.mean(fudged_image[segments == x][:, 0]),
@@ -253,7 +256,7 @@ class LimeImageExplainerDynamicExperimentation(object):
                         np.mean(fudged_image[segments == x][:, 2]))
             else:
                 fudged_image[:] = hide_color
-
+            
             top = labels
                 
             batch_size = config['lime_segmentation']['batch_size']
@@ -278,7 +281,6 @@ class LimeImageExplainerDynamicExperimentation(object):
                 metric=distance_metric
             ).ravel()
             
-            
             ret_exp = ImageExplanation(image_data_labels, segments)
             if top_labels:
                 top = np.argsort(labels[0])[-top_labels:]
@@ -294,7 +296,9 @@ class LimeImageExplainerDynamicExperimentation(object):
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
                 
-            top_labels_list = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            top_labels_list_local = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            for i in top_labels_list_local:
+                top_labels_list.append(i)
         return ret_exp
 
     def data_labels(self,
@@ -339,15 +343,14 @@ class LimeImageExplainerDynamicExperimentation(object):
             temp[mask] = fudged_image[mask]
             imgs.append(temp)
             if len(imgs) == batch_size:
-                #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-
                 if config["model_to_explain"]["EfficientNet"]:
                     preds = np.array(classifier_fn(np.array(imgs)))
                 elif config["model_to_explain"]["ResNet"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
+                    #imgs = np.array([preprocess(np.array(i.numpy())) if isinstance(i, torch.Tensor) else preprocess(np.array(i)) for i in imgs])
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -358,12 +361,12 @@ class LimeImageExplainerDynamicExperimentation(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-                elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+                elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     if torch.cuda.is_available():
@@ -375,18 +378,17 @@ class LimeImageExplainerDynamicExperimentation(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
                 labels.extend(preds)
                 imgs = []
         if len(imgs) > 0:
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]:
                 preds = classifier_fn(np.array(imgs))
             elif config["model_to_explain"]["ResNet"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -397,12 +399,12 @@ class LimeImageExplainerDynamicExperimentation(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-            elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+            elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     
@@ -415,7 +417,7 @@ class LimeImageExplainerDynamicExperimentation(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
             labels.extend(preds)
          
         return data, np.array(labels)
@@ -517,22 +519,20 @@ class SLimeImageExplainer(object):
             An ImageExplanation object (see lime_image.py) with the corresponding
             explanations.
         """
-        
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
         if config['model_to_explain']['EfficientNet']:
             fudged_image = image.copy()
             dim_local = (image.shape[0], image.shape[1])
             image_data_labels = image.copy()
         elif config['model_to_explain']['ResNet']:
             fudged_image = image.clone()
-            fudged_image = fudged_image.detach().numpy()
+            fudged_image = fudged_image.cpu().detach().numpy()
             dim_local = (image.shape[1], image.shape[2])
             fudged_image = fudged_image.transpose(1,2,0)
             image_data_labels = fudged_image.copy()
             if not config['lime_segmentation']['all_dseg']:
                 image = fudged_image
             
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             fudged_image = image.copy()
             fudged_image = fudged_image['pixel_values'].squeeze(0).permute(1,2,0).numpy()
             dim_local = (fudged_image.shape[0], fudged_image.shape[1])
@@ -542,6 +542,8 @@ class SLimeImageExplainer(object):
         
         if random_seed is None:
             random_seed = self.random_state.randint(0, high=1000)
+
+        top_labels_list = []
 
         for iter in range(iterations):
             random_init = False
@@ -625,7 +627,9 @@ class SLimeImageExplainer(object):
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
                 
-            top_labels_list = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            top_labels_list_local = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            for i in top_labels_list_local:
+                top_labels_list.append(i)
         return ret_exp
 
     def testing_explain_instance(self, image, classifier_fn, segments, labels=(1,),
@@ -769,8 +773,6 @@ class SLimeImageExplainer(object):
                 mask[segments == z] = True
             temp[mask] = fudged_image[mask]
             imgs.append(temp)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if len(imgs) == batch_size:
                 if config["model_to_explain"]["EfficientNet"]:
                     preds = np.array(classifier_fn(np.array(imgs)))
@@ -778,7 +780,7 @@ class SLimeImageExplainer(object):
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -789,12 +791,12 @@ class SLimeImageExplainer(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-                elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+                elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     if torch.cuda.is_available():
@@ -806,19 +808,17 @@ class SLimeImageExplainer(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
                 labels.extend(preds)
                 imgs = []
         if len(imgs) > 0:
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-
             if config["model_to_explain"]["EfficientNet"]:
                 preds = classifier_fn(np.array(imgs))
             elif config["model_to_explain"]["ResNet"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -829,12 +829,12 @@ class SLimeImageExplainer(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-            elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+            elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     
@@ -847,7 +847,7 @@ class SLimeImageExplainer(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
             labels.extend(preds)
         
         return data, np.array(labels)
@@ -1039,7 +1039,7 @@ class LimeImageExplainerDynamic(object):
             segmentation_fn_seed = SegmentationAlgorithm('quickshift', kernel_size=4,
                                                     max_dist=200, ratio=0.2,
                                                     random_seed=random_seed)
-        
+        top_labels_list = []
         
         for iter in range(iterations):
             random_init = False
@@ -1128,7 +1128,9 @@ class LimeImageExplainerDynamic(object):
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
                 
-            top_labels_list = ret_exp.local_exp[ret_exp.top_labels[0]][0]
+            top_labels_list_local = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            for i in top_labels_list_local:
+                top_labels_list.append(i)
         return ret_exp
 
     def data_labels(self,
@@ -1172,8 +1174,6 @@ class LimeImageExplainerDynamic(object):
                 mask[segments == z] = True
             temp[mask] = fudged_image[mask]
             imgs.append(temp)
-            
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if len(imgs) == batch_size:
                 if config["model_to_explain"]["EfficientNet"]:
                     #preds = classifier_fn(np.array(imgs).reshape((len(imgs), 3, 380, 380)))
@@ -1181,7 +1181,7 @@ class LimeImageExplainerDynamic(object):
                 elif config["model_to_explain"]["ResNet"]:
                     #preds = classifier_fn(np.array(imgs).reshape((len(imgs), 3, 224, 224)))
                     preds = classifier_fn(np.array(imgs))
-                elif config["model_to_explain"]["VisionTransformer"]:
+                elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preds = None
                 labels.extend(preds)
                 imgs = []
@@ -1290,22 +1290,20 @@ class LimeImageExplainer(object):
         """
         shuffle = config['lime_segmentation']['shuffle']
         
-        #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-        
         if config['model_to_explain']['EfficientNet']:
             fudged_image = image.copy()
             dim_local = (image.shape[0], image.shape[1])
             image_data_labels = image.copy()
         elif config['model_to_explain']['ResNet']:
             fudged_image = image.clone()
-            fudged_image = fudged_image.detach().numpy()
+            fudged_image = fudged_image.cpu().detach().numpy()
             dim_local = (image.shape[1], image.shape[2])
             fudged_image = fudged_image.transpose(1,2,0)
             image_data_labels = fudged_image.copy()
             if not config['lime_segmentation']['all_dseg']:
                 image = fudged_image
             
-        elif config['model_to_explain']['VisionTransformer']:
+        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
             fudged_image = image.copy()
             fudged_image = fudged_image['pixel_values'].squeeze(0).permute(1,2,0).numpy()
             dim_local = (fudged_image.shape[0], fudged_image.shape[1])
@@ -1315,6 +1313,8 @@ class LimeImageExplainer(object):
 
         if random_seed is None:
             random_seed = self.random_state.randint(0, high=1000)
+        
+        top_labels_list = []
         
         for iter in range(iterations):
             random_init = False
@@ -1341,7 +1341,7 @@ class LimeImageExplainer(object):
                     image = fudged_image
                     segments_seed = segmentation_fn(image, config)
                 else:
-                    segments_seed = segmentation_fn_dynamic(segments_seed, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
+                    segments_seed, links_ = segmentation_fn_dynamic(segments_seed, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
                 segments = segments_seed.copy()
                 num_samples_local = num_samples
             random_init = True
@@ -1401,7 +1401,9 @@ class LimeImageExplainer(object):
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
                 
-            top_labels_list = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            top_labels_list_local = ret_exp.local_exp[ret_exp.top_labels[0]][0:config['lime_segmentation']['num_features_explanation']]
+            for i in top_labels_list_local:
+                top_labels_list.append(i)
             
         return ret_exp
 
@@ -1445,9 +1447,6 @@ class LimeImageExplainer(object):
                 mask[segments == z] = True
             temp[mask] = fudged_image[mask]
             imgs.append(temp)
-              
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-
             if len(imgs) == batch_size:
                 if config["model_to_explain"]["EfficientNet"]:
                     preds = np.array(classifier_fn(np.array(imgs)))
@@ -1455,7 +1454,7 @@ class LimeImageExplainer(object):
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -1466,12 +1465,12 @@ class LimeImageExplainer(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-                elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+                elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     if torch.cuda.is_available():
@@ -1483,18 +1482,17 @@ class LimeImageExplainer(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
                 labels.extend(preds)
                 imgs = []
         if len(imgs) > 0:
-            #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
             if config["model_to_explain"]["EfficientNet"]:
                 preds = classifier_fn(np.array(imgs))
             elif config["model_to_explain"]["ResNet"]:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     classifier_fn.eval()
@@ -1505,12 +1503,12 @@ class LimeImageExplainer(object):
                     with torch.no_grad():
                         output = classifier_fn(input_batch)
                     predictions = torch.nn.functional.softmax(output, dim=0)
-                    preds = predictions.detach().numpy()#.reshape( -1)
-            elif config["model_to_explain"]["VisionTransformer"]:
+                    preds = predictions.cpu().detach().numpy()#.reshape( -1)
+            elif config["model_to_explain"]["VisionTransformer"] or config['model_to_explain']['ConvNext']:
                     preprocess = transforms.Compose([
                         transforms.ToTensor(),
                     ])
-                    imgs = np.array([preprocess(np.array(i)) for i in imgs])
+                    imgs = [preprocess(np.array(i)) for i in imgs]
                     input_batch = torch.stack([torch.Tensor(i) for i in imgs])
                     input_batch.unsqueeze(0)
                     
@@ -1523,6 +1521,6 @@ class LimeImageExplainer(object):
                     
                     output = output.logits
                     preds = torch.nn.functional.softmax(output, dim=1)
-                    preds = preds.detach().numpy()
+                    preds = preds.cpu().detach().numpy()
             labels.extend(preds)
         return data, np.array(labels)

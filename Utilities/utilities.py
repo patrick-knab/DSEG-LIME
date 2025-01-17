@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 import json
+import pickle
 import torch
 
 from tensorflow.keras.utils import load_img
@@ -12,6 +13,7 @@ from skimage.transform import resize  # Importing the resize function from sciki
 
 
 ###### Functions for the COCO dataset ######
+
 
 def plot_image(image_path, plot=True):
     """
@@ -161,13 +163,13 @@ def predict_image(image_path, model, config, plot=False, dim=(380, 380), model_p
     
     img_array, img_raw = load_and_preprocess_image(image_path, config,plot, dim, model_processor, contrastivity)
     
-    #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
     if config['model_to_explain']['EfficientNet'] or contrastivity: 
         img_array = np.expand_dims(img_array, 0)
         predictions = model.predict(img_array)
         
     elif config['model_to_explain']['ResNet']:
         input_batch = img_array.unsqueeze(0) 
+        
         if torch.cuda.is_available():
             input_batch = input_batch.to('cuda')
             model.to('cuda')
@@ -175,13 +177,18 @@ def predict_image(image_path, model, config, plot=False, dim=(380, 380), model_p
         with torch.no_grad():
             output = model(input_batch)
         predictions = torch.nn.functional.softmax(output[0], dim=0)
-        predictions = predictions.detach().numpy().reshape(1, -1)
+        predictions = predictions.cpu().detach().numpy().reshape(1, -1)
         
-    elif config['model_to_explain']['VisionTransformer']:
-        outputs = model(**img_array)
+    elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
+        if torch.cuda.is_available():
+            outputs = img_array.to('cuda')
+            model.to('cuda')
+
+        with torch.no_grad():
+            outputs = model(**img_array)
         output = outputs.logits
         predictions = torch.nn.functional.softmax(output[0], dim=0)
-        predictions = predictions.detach().numpy().reshape(1, -1)
+        predictions = predictions.cpu().detach().numpy().reshape(1, -1)
 
     decoded_predictions = decode_predictions(predictions)
     
@@ -209,8 +216,6 @@ def load_and_preprocess_image(image_path, config, plot=False, dim=(380, 380), mo
         None
 
     """
-    #IMPORTANT: Add here the preprocessing of the data in case you integrate a new model which is not covered in this implementation!
-    
     if config['model_to_explain']['EfficientNet'] or contrastivity:
         x_raw = load_img(image_path, target_size=dim)
         x_raw = np.array(x_raw)
@@ -220,7 +225,7 @@ def load_and_preprocess_image(image_path, config, plot=False, dim=(380, 380), mo
         x_raw = Image.open(image_path).convert('RGB')
         x = preprocess_resnet(x_raw, dim)
         
-    elif config['model_to_explain']['VisionTransformer']:
+    elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
         if model is None:
             print("Need model processor for VIT")
             x, x_raw = None, None
