@@ -242,7 +242,7 @@ class LimeImageExplainerGLIME(object):
                 if segmentation_fn:
                     segments_seed = segmentation_fn(image, config)
                 else:
-                    segments_seed = segmentation_fn_dynamic(segments_seed, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
+                    segments_seed, links_ = segmentation_fn_dynamic(segments_seed_org, top_labels_list, image, config, raw_Segments, hierarchy_dict, links_)
                 segments = segments_seed.copy()
                 num_samples_local = num_samples
             random_init = True
