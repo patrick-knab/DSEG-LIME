@@ -5,7 +5,7 @@
 <br />
 <div align="center">
 
-  <h1 align="center">DSEG-LIME - Improving Image Explanation by Hierarchical Data-Driven Segmentation</h1>
+  <h1 align="center">Beyond Pixels: Enhancing LIME with Hierarchical Features and Segmentation Foundation Models</h1>
 
   <p align="center">
     Preprint
