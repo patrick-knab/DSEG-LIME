@@ -20,8 +20,8 @@ from Utilities.lime_segmentation import *
 import multiprocessing
 from joblib import Parallel, delayed
 
-from utils.shap_utils import *
-from sam_explainer import *
+from .utils.shap_utils import *
+from .sam_explainer import *
 
 from .GLIME.lime_image import LimeImageExplainerGLIME
 from .GLIME.utils import *
