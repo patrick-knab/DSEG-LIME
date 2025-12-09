@@ -1,31 +1,38 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+"""Evaluation utilities for DSEG-LIME."""
+
+import multiprocessing
 import os
-import sys
-import time
-from sklearn.metrics.pairwise import cosine_similarity
-import tensorflow as tf
-import keras
 import pathlib
 import pickle
-from tensorflow.keras.utils import load_img, img_to_array
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
-from efficientnet.tfkeras import EfficientNetB4, EfficientNetB3
+import sys
+import time
+from typing import Any, Dict, Optional, Tuple
+
+import keras
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import tensorflow as tf
+import torch
 import torch.nn as nn
-
-from Utilities.utilities import *
-from Utilities.lime_segmentation import *
-import multiprocessing
+from efficientnet.tfkeras import EfficientNetB3, EfficientNetB4
 from joblib import Parallel, delayed
+from segment_anything import (
+    SamAutomaticMaskGenerator,
+    SamPredictor,
+    sam_model_registry,
+)
+from skimage.segmentation import mark_boundaries
+from sklearn.metrics.pairwise import cosine_similarity
+from tensorflow.keras.utils import img_to_array, load_img
 
-from .utils.shap_utils import *
-from .sam_explainer import *
-
+from Utilities.lime_segmentation import *
+from Utilities.utilities import *
 from .GLIME.lime_image import LimeImageExplainerGLIME
 from .GLIME.utils import *
-from skimage.segmentation import mark_boundaries
+from .sam_explainer import *
+from .utils.shap_utils import *
 
 def adapted_gini(values):
     # Convert to a numpy array
@@ -46,52 +53,65 @@ def adapted_gini(values):
     )
     return gini
 
-def predict_image_(image_path, model, config, plot=False, dim=(380, 380), model_processor=None, contrastivity = False):
-        """
-        Predicts the class labels of an image using a given model.
+def predict_image_(
+    image_path: str,
+    model: Any,
+    config: Dict[str, Any],
+    plot: bool = False,
+    dim: Tuple[int, int] = (380, 380),
+    model_processor: Optional[Any] = None,
+    contrastivity: bool = False,
+) -> Tuple[Any, Any]:
+    """Predict class probabilities for an image.
 
-        Args:
-            image_path (str): The path to the image file.
-            model: The model used for prediction.
-            config (dict): Configuration parameters.
-            plot (bool, optional): Whether to plot the decoded predictions. Defaults to False.
-            dim (tuple, optional): The dimensions to resize the image. Defaults to (380, 380).
-            model_processor: The model processor used for image preprocessing.
+    Args:
+        image_path: Path to the image file.
+        model: Model used for prediction (TF/PyTorch/HF).
+        config: Configuration parameters controlling model family.
+        plot: Whether to print decoded predictions.
+        dim: Target spatial size for resizing.
+        model_processor: Optional processor/tokenizer for HF models.
+        contrastivity: Whether to return contrastive features (if supported).
 
-        Returns:
-            list: The decoded predictions of the image.
-        """
-        
-        img_array, img_raw = load_and_preprocess_image(image_path, config,plot, dim, model_processor, contrastivity)
-        
-        if config['model_to_explain']['EfficientNet'] or contrastivity: 
-            img_array = np.expand_dims(img_array, 0)
-            predictions = model(img_array)
-            
-        elif config['model_to_explain']['ResNet']:
-            input_batch = img_array.unsqueeze(0) 
-            
-            if torch.cuda.is_available():
-                input_batch = input_batch.to('cuda')
-                model.to('cuda')
+    Returns:
+        A tuple of (decoded_predictions, raw_predictions).
+    """
 
-            with torch.no_grad():
-                output = model(input_batch)
-            predictions = torch.nn.functional.softmax(output[0], dim=0)
-            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
-            
-        elif config['model_to_explain']['VisionTransformer'] or config['model_to_explain']['ConvNext']:
-            outputs = model(**img_array)
-            output = outputs.logits
-            predictions = torch.nn.functional.softmax(output[0], dim=0)
-            predictions = predictions.cpu().detach().numpy().reshape(1, -1)
+    img_array, _ = load_and_preprocess_image(
+        image_path, config, plot, dim, model_processor, contrastivity
+    )
 
-        decoded_predictions = decode_predictions(predictions)
-        
-        if plot:
-            print(decoded_predictions)
-            
-        return decoded_predictions, predictions
+    if config["model_to_explain"]["EfficientNet"] or contrastivity:
+        img_array = np.expand_dims(img_array, 0)
+        predictions = model(img_array)
+
+    elif config["model_to_explain"]["ResNet"]:
+        input_batch = img_array.unsqueeze(0)
+
+        if torch.cuda.is_available():
+            input_batch = input_batch.to("cuda")
+            model.to("cuda")
+
+        with torch.no_grad():
+            output = model(input_batch)
+        predictions = torch.nn.functional.softmax(output[0], dim=0)
+        predictions = predictions.cpu().detach().numpy().reshape(1, -1)
+
+    elif (
+        config["model_to_explain"]["VisionTransformer"]
+        or config["model_to_explain"]["ConvNext"]
+    ):
+        outputs = model(**img_array)
+        output = outputs.logits
+        predictions = torch.nn.functional.softmax(output[0], dim=0)
+        predictions = predictions.cpu().detach().numpy().reshape(1, -1)
+
+    decoded_predictions = decode_predictions(predictions)
+
+    if plot:
+        print(decoded_predictions)
+
+    return decoded_predictions, predictions
 class eac():
     def __init__(self):
         self.model = None
