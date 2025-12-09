@@ -1,0 +1,30 @@
+version: 2
+
+updates:
+  # Keep Python requirements fresh
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    ignore:
+      # Keep TensorFlow within tested range (2.17.x); adjust when validated.
+      - dependency-name: "tensorflow"
+        versions: [">=2.18.0"]
+      # Keep PyTorch within tested range; adjust when validated.
+      - dependency-name: "torch"
+        versions: [">2.2.2"]
+      - dependency-name: "torchvision"
+        versions: [">0.17.2"]
+
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci"
+
