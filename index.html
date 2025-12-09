@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSEG-LIME: Enhancing LIME with Hierarchical Features</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+            }
+        };
+    </script>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --background-color: #f8f9fa;
+            --text-color: #2c3e50;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--background-color);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        header {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 2rem 0;
+            margin-bottom: 3rem;
+        }
+        
+        .title {
+            text-align: center;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+        
+        .subtitle {
+            font-size: 1.2rem;
+            color: #666;
+            margin-bottom: 2rem;
+        }
+        
+        .main-image {
+            width: 100%;
+            max-width: 800px;
+            margin: 2rem auto;
+            display: block;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .section {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        h2 {
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+            font-size: 1.8rem;
+        }
+        
+        .abstract {
+            font-size: 1.1rem;
+            color: #444;
+            margin-bottom: 2rem;
+        }
+        
+        .button {
+            display: inline-block;
+            padding: 0.8rem 1.5rem;
+            background-color: var(--secondary-color);
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+            margin: 0.5rem;
+        }
+        
+        .button:hover {
+            background-color: #2980b9;
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin: 2rem 0;
+        }
+        
+        .feature-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 2rem 0;
+            margin-top: 3rem;
+            color: #666;
+        }
+        
+        .paper-info {
+            text-align: center;
+            margin: 2rem 0;
+            padding: 1rem;
+            background: #e1f5fe;
+            border-radius: 8px;
+        }
+        
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin: 2rem 0;
+        }
+        
+        .result-image {
+            width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .metric-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--secondary-color);
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #4caf50;
+            color: white;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            margin: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="title">
+                <h1>Beyond Pixels: Enhancing LIME with Hierarchical Features and Segmentation Foundation Models</h1>
+                <p class="subtitle">A Novel Approach to Explainable AI in Image Analysis</p>
+                <div class="paper-info">
+                    <a href="https://arxiv.org/abs/2403.07733" class="button">📄 Read on arXiv</a>
+                    <span class="badge">Accepted at ICLR 2025 FM-Wild Workshop</span>
+                </div>
+                <div style="margin-top: 2rem; text-align: center;">
+                    <div style="display: inline-block;">
+                        <div style="display: grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap: 2rem;">
+                            <div style="text-align: center;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem; font-size: 1.1rem;">Patrick Knab</p>
+                                <p style="color: #666; font-size: 0.9rem; margin-bottom: 0.5rem;">Technical University of Clausthal</p>
+                                <p style="color: #666; font-size: 0.9rem; font-family: monospace;">patrick.knab@tu-clausthal.de</p>
+                            </div>
+                            <div style="text-align: center;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem; font-size: 1.1rem;">Sascha Marton</p>
+                                <p style="color: #666; font-size: 0.9rem; margin-bottom: 0.5rem;">University of Mannheim</p>
+                                <p style="color: #666; font-size: 0.9rem; font-family: monospace;">sascha.marton@uni-mannheim.de</p>
+                            </div>
+                            <div style="text-align: center;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem; font-size: 1.1rem;">Christian Bartelt</p>
+                                <p style="color: #666; font-size: 0.9rem; margin-bottom: 0.5rem;">Technical University of Clausthal</p>
+                                <p style="color: #666; font-size: 0.9rem; font-family: monospace;">christian.bartelt@tu-clausthal.de</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <img src="Dataset/Results/Example_dog.png" alt="Example Dog Image Analysis" class="main-image">
+        
+        <section class="section">
+            <h2>Abstract</h2>
+            <div style="display: flex; gap: 2rem; align-items: flex-start; flex-wrap: wrap;">
+                <div style="flex: 2; min-width: 300px;">
+                    <p class="abstract">
+                        <strong>LIME</strong> (Local Interpretable Model-agnostic Explanations) is a popular <strong>XAI framework</strong> for unraveling decision-making processes in vision machine-learning models. The technique utilizes image segmentation methods to identify fixed regions for calculating feature importance scores as explanations. Therefore, poor segmentation can weaken the explanation and reduce the importance of segments, ultimately affecting the overall clarity of interpretation. To address these challenges, we introduce the <strong>DSEG-LIME</strong> (Data-Driven Segmentation LIME) framework, featuring: i) a <strong>data-driven segmentation</strong> for human-recognized feature generation by foundation model integration, and ii) a <strong>user-steered granularity</strong> in the hierarchical segmentation procedure through composition. Our findings demonstrate that <strong>DSEG</strong> outperforms on several XAI metrics on pre-trained ImageNet models and improves the alignment of explanations with human-recognized concepts.
+                    </p>
+                </div>
+                <div style="flex: 1; min-width: 250px; background: #f8f9fa; padding: 1.5rem; border-radius: 8px;">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Core Technologies</h4>
+                    <ul style="list-style: none; padding: 0;">
+                        <li style="margin-bottom: 0.8rem;">
+                            <span style="font-weight: 600;">🔍 Foundation Models</span>
+                            <p style="font-size: 0.9rem; color: #666; margin-top: 0.2rem;">SAM, DETR</p>
+                        </li>
+                        <li style="margin-bottom: 0.8rem;">
+                            <span style="font-weight: 600;">🧠 Base Models</span>
+                            <p style="font-size: 0.9rem; color: #666; margin-top: 0.2rem;">EfficientNet, ResNet, ViT, ConvNext, CLIP</p>
+                        </li>
+                        <li>
+                            <span style="font-weight: 600;">🎯 Applications</span>
+                            <p style="font-size: 0.9rem; color: #666; margin-top: 0.2rem;">XAI, Vision, Concept Hierarchy</p>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Key Features</h2>
+            <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;">
+                <div class="feature-card" style="display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3>Data-Driven Segmentation</h3>
+                        <p style="margin: 1rem 0;">Advanced feature generation aligned with human recognition patterns using foundation models</p>
+                        <ul style="list-style: none; margin-top: 1rem; font-size: 0.9rem; color: #666;">
+                            <li style="margin-bottom: 0.5rem;">
+                                <span>🔍 SAM (Segment Anything)</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">Precise object segmentation</p>
+                            </li>
+                            <li>
+                                <span>🎯 DETR Object Detection</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">End-to-end object recognition</p>
+                            </li>
+                        </ul>
+                    </div>
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
+                        <span style="font-size: 0.9rem; color: #2c3e50; font-weight: 600;">Primary Use:</span>
+                        <p style="font-size: 0.85rem; color: #666; margin-top: 0.3rem;">Feature extraction and semantic segmentation</p>
+                    </div>
+                </div>
+                <div class="feature-card" style="display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3>Hierarchical Approach</h3>
+                        <p style="margin: 1rem 0;">User-steered granularity in the segmentation procedure through composition</p>
+                        <ul style="list-style: none; margin-top: 1rem; font-size: 0.9rem; color: #666;">
+                            <li style="margin-bottom: 0.5rem;">
+                                <span>🌟 ConvNeXt Integration</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">Modern architecture support</p>
+                            </li>
+                            <li>
+                                <span>🔮 ResNet Backbone</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">Robust feature hierarchy</p>
+                            </li>
+                        </ul>
+                    </div>
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
+                        <span style="font-size: 0.9rem; color: #2c3e50; font-weight: 600;">Primary Use:</span>
+                        <p style="font-size: 0.85rem; color: #666; margin-top: 0.3rem;">Multi-level feature analysis and composition</p>
+                    </div>
+                </div>
+                <div class="feature-card" style="display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3>Improved Interpretability</h3>
+                        <p style="margin: 1rem 0;">Enhanced alignment with human-recognized concepts and better XAI metrics</p>
+                        <ul style="list-style: none; margin-top: 1rem; font-size: 0.9rem; color: #666;">
+                            <li style="margin-bottom: 0.5rem;">
+                                <span>👁️ VisionTransformer Support</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">Attention-based analysis</p>
+                            </li>
+                            <li>
+                                <span>🎯 CLIP Zero-shot Analysis</span>
+                                <p style="font-size: 0.85rem; margin-left: 1.5rem; color: #888;">Cross-modal understanding</p>
+                            </li>
+                        </ul>
+                    </div>
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
+                        <span style="font-size: 0.9rem; color: #2c3e50; font-weight: 600;">Primary Use:</span>
+                        <p style="font-size: 0.85rem; color: #666; margin-top: 0.3rem;">Human-aligned explanations and explanation for zero-shot predictions</p>
+                    </div>
+                </div>
+            </div>
+
+            <div style="background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-top: 2rem;">
+                <h3 style="color: var(--primary-color); margin-bottom: 1rem; font-size: 1.8rem;">DSEG-LIME Technique</h3>
+                <img src="Dataset/Results/plane.png" alt="DSEG-LIME Technique Visualization" style="width: 100%; max-width: 800px; margin: 0 auto 2rem; display: block; border-radius: 4px;">
+                
+                <div style="font-size: 1rem; color: #333; max-width: 900px; margin: 0 auto;">
+                    <div style="background: #fff; padding: 2rem; border-radius: 8px; font-family: 'Computer Modern', serif; line-height: 1.6; overflow-x: auto; border: 1px solid #e0e0e0;">
+                        <h4 style="color: var(--primary-color); margin-bottom: 1.5rem; font-family: 'Computer Modern', serif; text-align: center; font-size: 1.2rem;">Algorithm 1: DSEG-LIME Framework</h4>
+                        
+                        <div style="background: white; padding: 1.5rem; font-size: 0.95rem;">
+                            <div style="margin-bottom: 1rem; font-style: italic;">
+                                <span style="font-weight: bold;">Input:</span> $f$ (black-box model), $\zeta$ (segmentation function), $x$ (input instance), $g$ (interpretable model), $d$ (maximum depth), $hp$ (hyperparameters), $\theta$ (minimum segment size), $k$ (top segments)
+                            </div>
+
+                            <div style="color: #2c3e50; font-family: 'Computer Modern', serif;">
+                                <div style="margin-bottom: 0.8rem;">
+                                    <div style="font-weight: bold;">1. Initial segmentation:</div>
+                                    <div style="margin-left: 1rem;">$\mathcal{S} \leftarrow \zeta(x, hp)  \hspace{2em} \triangleright$ Segment the input instance</div>
+                                </div>
+
+                                <div style="margin-bottom: 0.8rem;">
+                                    <div style="font-weight: bold;">2. Small cluster removal:</div>
+                                    <div style="margin-left: 1rem;">$\mathcal{S'} \leftarrow \{ s_i \in \mathcal{S} \mid \text{size}(s_i) \geq \theta \}   \hspace{2em} \triangleright$ Remove small clusters</div>
+                                </div>
+
+                                <div style="margin-bottom: 0.8rem;">
+                                    <div style="font-weight: bold;">3. Hierarchical ordering:</div>
+                                    <div style="margin-left: 1rem;">$\mathcal{H} \leftarrow \text{BuildHierarchy}(\mathcal{S'})   \hspace{2em} \triangleright$ Build hierarchical segmentation</div>
+                                </div>
+
+                                <div style="margin-bottom: 0.5rem;">
+                                    $\textbf{for}$ $l \leftarrow 1$ $\textbf{to}$ $d$ $\textbf{do}$
+                                </div>
+
+                                <div style="margin-left: 1.5rem;">
+                                    <div style="margin-bottom: 0.8rem;">
+                                        <div style="font-weight: bold;">4. Empty space removal:</div>
+                                        $\textbf{if}$ $l = 1$ $\textbf{then}$
+                                        <div style="margin-left: 1rem;">$\mathcal{S}_l \leftarrow \mathcal{H}[l]  \hspace{2em} \triangleright$ Segments at depth $1$</div>
+                                        $\textbf{else}$
+                                        <div style="margin-left: 1rem;">$\mathcal{S}_l \leftarrow \{ s_i \in \mathcal{H}[l] \mid \text{parent}(s_i) \in \text{top_ids} \}   \hspace{2em} \triangleright$ Select child segments</div>
+                                        $\textbf{end if}$
+                                    </div>
+
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $\mathcal{S}_l \leftarrow \text{NearestNeighbor}(\mathcal{S}_l)  \hspace{2em} \triangleright$ Fill unsegmented space
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $Z \leftarrow \text{Perturb}(x, \mathcal{S}_l)   \hspace{2em} \triangleright$ Create neighborhood perturbations
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $w \leftarrow \text{Proximity}(Z, x)   \hspace{2em} \triangleright$ Compute sample weights
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $\text{preds} \leftarrow \{f(z) \mid z \in Z\}   \hspace{2em} \triangleright$ Get predictions
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $g \leftarrow \text{InitializeModel}(g)   \hspace{2em} \triangleright$ Initialize model
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $g \leftarrow \text{Fit}(g, Z, \text{preds}, w)   \hspace{2em} \triangleright$ Train model
+                                    </div>
+                                    <div style="margin-bottom: 0.4rem;">
+                                        $\text{top_ids} \leftarrow \{ \text{id}(s_i) \mid s_i \in \mathcal{S}_l, s_i \text{ is among top } k \text{ features in } g \}   \hspace{2em} \triangleright$ Update top IDs
+                                    </div>
+                                </div>
+                                <div style="margin-bottom: 0.5rem;">
+                                    $\textbf{end for}$
+                                </div>
+                            </div>
+
+                            <div style="margin-top: 1rem; font-style: italic;">
+                                <span style="font-weight: bold;">Return</span> $g   \hspace{2em} \triangleright$ Return the local surrogate model
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="background: #e3f2fd; padding: 1.5rem; border-radius: 8px; margin-top: 2rem;">
+                        <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Key Implementation Details</h4>
+                        <ul style="list-style-type: none; padding: 0;">
+                            <li style="margin-bottom: 0.5rem;">• Hierarchical segmentation with depth control (\(d\))</li>
+                            <li style="margin-bottom: 0.5rem;">• Adaptive feature selection based on parent importance</li>
+                            <li>• Integration with any black-box model (\(f\)) and interpretable model (\(g\))</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Evaluation Setup</h2>
+            <div style="margin-bottom: 2rem;">
+                <h3>Methodology</h3>
+                <div style="background: white; padding: 1.5rem; border-radius: 8px; margin-top: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Model Architecture</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin: 1rem 0;">
+                        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px;">
+                            <h5 style="color: var(--primary-color); margin-bottom: 0.8rem;">🧠 Primary Models</h5>
+                            <div style="margin-bottom: 1rem;">
+                                <p style="font-weight: 600; margin-bottom: 0.3rem;">EfficientNet (B4)</p>
+                                <p style="font-size: 0.9rem; color: #666;">Core architecture for evaluations</p>
+                            </div>
+                            <div>
+                                <p style="font-weight: 600; margin-bottom: 0.3rem;">ResNet-101</p>
+                                <p style="font-size: 0.9rem; color: #666;">Feature extraction backbone</p>
+                            </div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px;">
+                            <h5 style="color: var(--primary-color); margin-bottom: 0.8rem;">👁️ Advanced Models</h5>
+                            <div style="margin-bottom: 1rem;">
+                                <p style="font-weight: 600; margin-bottom: 0.3rem;">VisionTransformer-384</p>
+                                <p style="font-size: 0.9rem; color: #666;">Self-attention mechanisms</p>
+                            </div>
+                            <div>
+                                <p style="font-weight: 600; margin-bottom: 0.3rem;">ConvNeXt</p>
+                                <p style="font-size: 0.9rem; color: #666;">Modern CNN architecture</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+                    <div style="background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                        <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Foundation Models</h4>
+                        <ul style="list-style: none; padding-left: 0;">
+                            <li style="margin-bottom: 1rem; padding: 0.8rem; background: #f8f9fa; border-radius: 6px;">
+                                <p style="font-weight: 600;">🔍 Segment Anything (SAM)</p>
+                                <p style="font-size: 0.9rem; color: #666; margin-top: 0.3rem;">State-of-the-art segmentation model for precise object boundary detection</p>
+                            </li>
+                            <li style="margin-bottom: 1rem; padding: 0.8rem; background: #f8f9fa; border-radius: 6px;">
+                                <p style="font-weight: 600;">🎯 DETR</p>
+                                <p style="font-size: 0.9rem; color: #666; margin-top: 0.3rem;">End-to-End object detection with transformers</p>
+                            </li>
+                            <li style="padding: 0.8rem; background: #f8f9fa; border-radius: 6px;">
+                                <p style="font-weight: 600;">🎯 CLIP</p>
+                                <p style="font-size: 0.9rem; color: #666; margin-top: 0.3rem;">Zero-shot visual-language understanding and classification</p>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div style="background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                        <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Segmentation Methods</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <div style="background: #e3f2fd; padding: 1rem; border-radius: 6px;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem;">DSEG (Ours)</p>
+                                <p style="font-size: 0.85rem; color: #666;">Data-driven hierarchical segmentation with SAM</p>
+                            </div>
+                            <div style="background: #f8f9fa; padding: 1rem; border-radius: 6px;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem;">SLIC</p>
+                                <p style="font-size: 0.85rem; color: #666;">Superpixel segmentation</p>
+                            </div>
+                            <div style="background: #f8f9fa; padding: 1rem; border-radius: 6px;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem;">Quickshift</p>
+                                <p style="font-size: 0.85rem; color: #666;">Mode-seeking segmentation</p>
+                            </div>
+                            <div style="background: #f8f9fa; padding: 1rem; border-radius: 6px;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem;">Felzenszwalb</p>
+                                <p style="font-size: 0.85rem; color: #666;">Graph-based segmentation</p>
+                            </div>
+                            <div style="background: #f8f9fa; padding: 1rem; border-radius: 6px;">
+                                <p style="font-weight: 600; margin-bottom: 0.5rem;">Watershed</p>
+                                <p style="font-size: 0.85rem; color: #666;">Marker-based segmentation</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="background: white; padding: 1.5rem; border-radius: 8px; margin-top: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Evaluation Framework</h4>
+                    <p>Comprehensive evaluation across multiple dimensions:</p>
+                    <ul style="list-style-type: none; padding-left: 1rem; margin: 1rem 0;">
+                        <li>• Correctness (Random Model, Random Explanation, Single Deletion)</li>
+                        <li>• Output Completeness (Preservation and Deletion)</li>
+                        <li>• Consistency (Noise Preservation and Deletion)</li>
+                        <li>• Contrastivity (Preservation and Deletion)</li>
+                        <li>• Performance Metrics (Gini Index, Stability, Computation Time)</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Quantitative Results</h2>
+            <p>Our comprehensive evaluation demonstrates DSEG-LIME's superior performance across multiple metrics:</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="results-grid">
+                <div class="metric-card">
+                    <h3>Gini Index</h3>
+                    <div class="metric-value">0.54</div>
+                    <p>Best score (DSEG-GLIME)</p>
+                </div>
+                <div class="metric-card">
+                    <h3>Stability</h3>
+                    <div class="metric-value">0.010</div>
+                    <p>Best repetition stability score</p>
+                </div>
+                <div class="metric-card">
+                    <h3>Random Model</h3>
+                    <div class="metric-value">74%</div>
+                    <p>Highest correctness score</p>
+                </div>
+            </div>
+
+            <div style="margin-top: 3rem;">
+                <h3>Detailed Evaluation Results</h3>
+                <div class="table-responsive">
+                    <table style="width: 100%; border-collapse: collapse; margin: 2rem 0; font-size: 0.9rem;">
+                        <thead>
+                            <tr style="background: var(--primary-color); color: white;">
+                                <th style="padding: 1rem; text-align: left;">Metric Category</th>
+                                <th style="padding: 1rem; text-align: center;">DSEG Score</th>
+                                <th style="padding: 1rem; text-align: left;">Performance</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 1rem;">Random Model Correctness</td>
+                                <td style="padding: 1rem; text-align: center;"><strong>74%</strong></td>
+                                <td style="padding: 1rem;">Highest among all methods</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 1rem;">Random Explanation</td>
+                                <td style="padding: 1rem; text-align: center;"><strong>93%</strong></td>
+                                <td style="padding: 1rem;">Best performance (DSEG-GLIME)</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 1rem;">Single Deletion</td>
+                                <td style="padding: 1rem; text-align: center;"><strong>64%</strong></td>
+                                <td style="padding: 1rem;">Significantly outperforms other methods</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 1rem;">Deletion Score</td>
+                                <td style="padding: 1rem; text-align: center;"><strong>74%</strong></td>
+                                <td style="padding: 1rem;">Consistent across SLIME, GLIME, and BayLIME variants</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 1rem;">Noise Preservation</td>
+                                <td style="padding: 1rem; text-align: center;"><strong>77%</strong></td>
+                                <td style="padding: 1rem;">Best consistency score (DSEG-GLIME/BayLIME)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px; margin-top: 2rem;">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Key Findings</h4>
+                    <ul style="list-style-type: none; padding: 0;">
+                        <li style="margin-bottom: 0.5rem;">✓ Superior performance in correctness metrics</li>
+                        <li style="margin-bottom: 0.5rem;">✓ Best-in-class stability (0.010)</li>
+                        <li style="margin-bottom: 0.5rem;">✓ Highest Gini index (0.54) with GLIME variant</li>
+                        <li style="margin-bottom: 0.5rem;">✓ Consistent high performance across all LIME variants</li>
+                        <li>✓ Balanced computation time (28.5-31.9s)</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Qualitative Results</h2>
+            <p>Our comprehensive user study with 87 participants evaluated the quality and interpretability of explanations across different segmentation methods:</p>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin: 2rem 0;">
+                <div style="background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 1rem;">User Study Results</h3>
+                    <table style="width: 100%; border-collapse: collapse; margin: 1rem 0;">
+                        <thead>
+                            <tr style="background: var(--primary-color); color: white;">
+                                <th style="padding: 0.75rem; text-align: left;">Method</th>
+                                <th style="padding: 0.75rem; text-align: center;">Avg. Score ↑</th>
+                                <th style="padding: 0.75rem; text-align: center;">Best Rated ↑</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom: 1px solid #eee; background: #e3f2fd;">
+                                <td style="padding: 0.75rem;"><strong>DSEG</strong></td>
+                                <td style="padding: 0.75rem; text-align: center;"><strong>4.16</strong></td>
+                                <td style="padding: 0.75rem; text-align: center;"><strong>1042</strong></td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 0.75rem;">SLIC</td>
+                                <td style="padding: 0.75rem; text-align: center;">3.01</td>
+                                <td style="padding: 0.75rem; text-align: center;">150</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 0.75rem;">Quickshift</td>
+                                <td style="padding: 0.75rem; text-align: center;">1.99</td>
+                                <td style="padding: 0.75rem; text-align: center;">90</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 0.75rem;">Felzenszwalb</td>
+                                <td style="padding: 0.75rem; text-align: center;">3.25</td>
+                                <td style="padding: 0.75rem; text-align: center;">253</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 0.75rem;">Watershed</td>
+                                <td style="padding: 0.75rem; text-align: center;">2.59</td>
+                                <td style="padding: 0.75rem; text-align: center;">205</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p style="font-size: 0.9rem; color: #666; margin-top: 1rem;">Note: Average scores are on a scale of 1-5, with 5 being the best. Best Rated shows the number of times each method was rated highest.</p>
+                </div>
+
+                <div style="background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 1rem;">Key Findings</h3>
+                    <ul style="list-style-type: none; padding: 0;">
+                        <li style="margin-bottom: 1rem;">📈 <strong>Highest Average Score:</strong> DSEG achieved 4.16/5, significantly outperforming other methods</li>
+                        <li style="margin-bottom: 1rem;">🏆 <strong>Most Preferred:</strong> DSEG was rated best 1042 times, over 4x more than the next best method</li>
+                        <li style="margin-bottom: 1rem;">📊 <strong>Consistent Performance:</strong> DSEG maintained superior ratings across different image types and scenarios</li>
+                        <li>🎯 <strong>User Satisfaction:</strong> Participants particularly appreciated DSEG's alignment with human-recognized features</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 2rem;">Example Explanations</h3>
+            <div class="results-grid" style="grid-template-columns: 1fr;">
+                <div style="background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 2rem;">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Feature Attribution Heatmaps</h4>
+                    <img src="Dataset/Results/heatmaps.png" alt="Feature Attribution Heatmaps" style="width: 100%; margin-bottom: 1rem;">
+                    <p style="color: #444; font-size: 0.95rem;">
+                        DSEG-LIME generates precise feature attribution heatmaps for different object classes. The examples above show attribution maps for a dishwasher, gorilla, and airplane, where darker blue regions indicate stronger positive contributions to the model's decision. This demonstrates DSEG-LIME's ability to identify semantically meaningful regions that influence the model's predictions.
+                    </p>
+                </div>
+
+                <div style="background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 2rem;">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Multimodal Analysis & Zero-Shot Classification</h4>
+                    <img src="Dataset/Results/Deer.png" alt="Deer Multimodal Analysis" style="width: 100%; margin-bottom: 1rem;">
+                    <p style="color: #444; font-size: 0.95rem;">
+                        DSEG-LIME's capability to integrate both visual and textual information for comprehensive explanations, showcasing its versatility in zero-shot classification scenarios using CLIP. The example demonstrates analysis of a deer image with associated text about wildlife conservation, where CLIP successfully identifies the image as a "land mammal" without prior training on this specific category. The bar chart shows feature importance scores that incorporate both visual elements and textual context, highlighting terms like "wildlife" and "climate" that influence the model's predictions. This demonstrates DSEG-LIME's ability to explain zero-shot predictions by leveraging CLIP's multimodal understanding.
+                    </p>
+                </div>
+
+                <div style="background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h4 style="color: var(--primary-color); margin-bottom: 1rem;">Granularity Control</h4>
+                    <img src="Dataset/Results/zebra.png" alt="Zebra Granularity Example" style="width: 100%; margin-bottom: 1rem;">
+                    <p style="color: #444; font-size: 0.95rem;">
+                        Demonstration of DSEG-LIME's user-controlled granularity: The original image (left) is analyzed at different hierarchical depths. At d=1, the explanation captures major features, while at d=2, it provides finer-grained segmentation focusing on more specific regions like the head and striped pattern. This flexibility allows users to choose the level of detail in explanations.
+                    </p>
+                </div>
+            </div>
+            <p style="text-align: center; margin-top: 1rem;">
+                <a href="#" class="button">View More Examples</a>
+            </p>
+        </section>
+
+        <section class="section">
+            <h2>Quick Start</h2>
+            <p>Get started with DSEG-LIME using our interactive notebook:</p>
+            <div style="text-align: center; margin: 2rem 0;">
+                <a href="DSEG_Demo.ipynb" class="button">Try Demo Notebook</a>
+                <a href="https://github.com/patrick-knab/DSEG-LIME" class="button">View on GitHub</a>
+            </div>
+        </section>
+
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>© 2025 DSEG-LIME Research Team. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html> 

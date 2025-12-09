@@ -14,7 +14,7 @@ import pickle
 import argparse
 import glob
 
-from utils.shap_utils import *
+from .utils.shap_utils import *
 
 from sklearn import metrics
 import os
