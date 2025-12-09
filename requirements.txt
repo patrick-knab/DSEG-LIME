@@ -6,7 +6,7 @@ lime==0.2.0.1
 matplotlib==3.10.1
 networkx==3.3
 numpy==1.26.4
-opencv_python==4.10.0.84
+opencv_python==4.12.0.88
 pandas==2.2.3
 Pillow==11.1.0
 scikit_learn==1.6.1
