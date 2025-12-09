@@ -3,7 +3,7 @@ joblib==1.2.0
 kmedoids==0.5.3.1
 lime==0.2.0.1
 matplotlib==3.10.1
-networkx==3.3
+networkx==3.6.1
 numpy==1.26.4
 opencv_python==4.10.0.84
 pandas==2.2.3
