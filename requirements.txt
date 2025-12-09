@@ -8,7 +8,7 @@ networkx==3.3
 numpy==1.26.4
 opencv_python==4.10.0.84
 pandas==2.2.3
-Pillow==11.1.0
+Pillow==12.0.0
 scikit_learn==1.6.1
 scipy==1.15.2
 seaborn==0.13.2
